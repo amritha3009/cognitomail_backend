@@ -1,0 +1,5 @@
+sender,subject,body,urls,spf,dkim,dmarc,label
+noreply@paypal-secure.ru,Urgent: Your PayPal account has been suspended,"Dear customer, your account has been limited. Click here to restore access immediately.",http://paypa1-secure.ru/verify|http://192.168.0.1/login,fail,fail,fail,1
+security@amazon-alerts.tk,Your Amazon order is on hold,"We need to verify your payment details before we can release your order. Please update your billing information.",http://amaz0n-billing.tk/update,fail,fail,none,1
+newsletter@legit-company.com,June Newsletter — Product Updates,"Hello! Here is our monthly update. We launched two new features this month. Read more on our blog.",https://legit-company.com/blog,pass,pass,pass,0
+hr@university.ac.uk,Staff meeting rescheduled to Friday 2pm,"Hi all, just a quick note that the weekly staff meeting has moved to Friday at 2pm in room B204. See you there.",https://university.ac.uk/calendar,pass,pass,pass,0
