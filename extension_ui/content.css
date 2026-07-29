@@ -1,0 +1,240 @@
+/* content.css — styles for the CognitoMail panel injected into Gmail/Outlook */
+
+#cognitomail-panel-container {
+  margin: 16px 0 8px 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+}
+
+.cgm-panel {
+  background: #161b27;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #2a3045;
+  max-width: 600px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+}
+
+/* Header */
+.cgm-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #0d1117;
+  border-bottom: 1px solid #2a3045;
+}
+
+.cgm-logo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #e8eaf6;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  flex: 1;
+}
+
+.cgm-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  letter-spacing: 0.3px;
+}
+
+.cgm-badge-scanning { background: #1e2d1e; color: #f9ab00; }
+.cgm-verdict-high   { background: #2d1a1a; color: #ea4335; }
+.cgm-verdict-med    { background: #2a2110; color: #f9ab00; }
+.cgm-verdict-low    { background: #0e2820; color: #00c9a7; }
+
+/* Body */
+.cgm-body {
+  padding: 14px;
+}
+
+/* Score gauge */
+.cgm-score-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #2a3045;
+}
+
+.cgm-score-wrap {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+}
+
+.cgm-gauge {
+  width: 72px;
+  height: 72px;
+}
+
+.cgm-gauge-arc {
+  transition: stroke-dasharray 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.cgm-score-num {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 800;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.cgm-score-meta {
+  flex: 1;
+}
+
+.cgm-score-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8eaf6;
+}
+
+.cgm-score-sublabel {
+  font-size: 11px;
+  color: #6b7385;
+  margin-bottom: 6px;
+}
+
+.cgm-method-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #1e2433;
+  color: #9aa0b4;
+  margin-bottom: 4px;
+}
+
+.cgm-conf {
+  font-size: 10px;
+  color: #6b7385;
+}
+
+/* Section label */
+.cgm-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #6b7385;
+  margin-bottom: 6px;
+}
+
+/* Flags */
+.cgm-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cgm-flag {
+  font-size: 12px;
+  color: #c4c9d8;
+  padding: 5px 8px;
+  background: #1a1f2e;
+  border-left: 3px solid #ea4335;
+  border-radius: 0 5px 5px 0;
+  line-height: 1.4;
+}
+
+.cgm-flag-ok {
+  border-left-color: #00c9a7;
+  color: #9aa0b4;
+}
+
+/* Auth chips */
+.cgm-auth-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cgm-auth {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 20px;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.3px;
+}
+
+.cgm-auth-pass    { background: #0e2820; color: #00c9a7; }
+.cgm-auth-fail    { background: #2d1a1a; color: #ea4335; }
+.cgm-auth-unknown { background: #1e2433; color: #6b7385; }
+
+/* Feedback */
+.cgm-feedback-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #2a3045;
+  font-size: 11px;
+  color: #6b7385;
+  flex-wrap: wrap;
+}
+
+.cgm-fb-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  border: 1px solid;
+  background: transparent;
+  transition: all 0.15s;
+}
+
+.cgm-fb-yes { border-color: #1a5c3a; color: #00c9a7; }
+.cgm-fb-yes:hover { background: #0e2820; }
+.cgm-fb-no  { border-color: #5c1a1a; color: #ea4335; }
+.cgm-fb-no:hover  { background: #2d1a1a; }
+
+/* Loading skeleton */
+.cgm-scan-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #6b7385;
+  margin-bottom: 14px;
+}
+
+.cgm-spinner {
+  width: 14px; height: 14px;
+  border: 2px solid #2a3045;
+  border-top-color: #00c9a7;
+  border-radius: 50%;
+  animation: cgm-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes cgm-spin { to { transform: rotate(360deg); } }
+
+.cgm-skeleton {
+  height: 10px;
+  border-radius: 5px;
+  background: #1e2433;
+  width: 100%;
+  margin-bottom: 8px;
+  animation: cgm-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes cgm-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
