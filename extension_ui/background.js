@@ -2,7 +2,7 @@
 // Receives analysis results from content.js and stores them
 // so popup.html can retrieve the latest result for the active tab.
 
-const BACKEND_URL = 'http://localhost:5050'; // change to your Render URL when deployed
+const BACKEND_URL = 'https://cognitomail-backend.onrender.com'; // change to your Render URL when deployed
 
 // Store: tabId → last analysis result
 const tabResults = {};
