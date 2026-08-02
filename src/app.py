@@ -34,7 +34,11 @@ app = Flask(__name__)
 
 # Allow requests from your Gmail simulation origin
 # In production replace "*" with your actual simulation URL
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app, resources={r"/*": {"origins": [
+    "gmail-simulation-student.netlify.app",
+    "gmail-simulation-professionals.netlify.app"
+    "gmail-simulation-above56.netlify.app"
+]}})
 
 
 # ---------------------------------------------------------------------------
