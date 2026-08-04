@@ -6,57 +6,47 @@
   'use strict';
 
   // ── State ──────────────────────────────────────────────────────────────────
-  let lastEmailSignature = null;  // prevents re-analysing the same email
-  let isAnalysing        = false; // lock: only one analysis at a time
-  let debounceTimer      = null;  // debounce handle
-  let isInjecting        = false; // true while we are touching the DOM
+  let lastEmailSignature = null;
+  let isAnalysing        = false;
+  let debounceTimer      = null;
+  let isInjecting        = false;
 
-  const DEBOUNCE_MS = 600; // wait 600ms of DOM silence before acting
+  const DEBOUNCE_MS = 600;
 
   // ── Observer ───────────────────────────────────────────────────────────────
-  // KEY FIX 1: Debounce — wait for DOM to settle before doing anything.
-  // KEY FIX 2: Bail immediately if we are mid-injection (avoids feedback loop).
-  // KEY FIX 3: Watch a narrower subtree where possible (falls back to body).
-
   const observer = new MutationObserver(() => {
-    // If we are currently injecting the panel, ignore ALL mutations
-    // — they are caused by us and would create an infinite loop.
     if (isInjecting) return;
-
-    // Debounce: reset the timer on every mutation.
-    // Only act once the DOM has been quiet for DEBOUNCE_MS milliseconds.
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(onDomSettled, DEBOUNCE_MS);
   });
 
-  // Try to watch a more specific Gmail container first.
-  // Gmail renders the email view inside a div with role="main".
-  // Watching only that subtree instead of all of document.body
-  // dramatically reduces the number of irrelevant mutations we receive.
   function startObserving() {
     const target = document.querySelector('[role="main"]') || document.body;
     observer.observe(target, { childList: true, subtree: true });
   }
 
-  // Gmail is a SPA — [role="main"] may not exist immediately on load.
-  // Wait for it before starting the observer.
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startObserving);
   } else {
     startObserving();
   }
 
-  // ── Called once the DOM has been quiet for DEBOUNCE_MS ms ─────────────────
+  // ── Called once DOM has been quiet for DEBOUNCE_MS ms ─────────────────────
   function onDomSettled() {
-    // If an analysis is already running, skip this cycle entirely.
     if (isAnalysing) return;
 
     const emailData = extractEmailData();
-    if (!emailData) return;
+    if (!emailData) {
+      // FIX: If no email is open, reset the signature so the next email
+      // opened is treated as new. This is the core fix for the "only
+      // first email detected" bug — without this, the signature stays
+      // set even when the user returns to the inbox.
+      lastEmailSignature = null;
+      return;
+    }
 
-    // Build a signature to detect whether this is a new email or the same one.
     const sig = emailData.subject + '||' + emailData.sender;
-    if (sig === lastEmailSignature) return; // same email — nothing to do
+    if (sig === lastEmailSignature) return;
 
     lastEmailSignature = sig;
     triggerAnalysis(emailData);
@@ -66,8 +56,8 @@
 
   function extractEmailData() {
     const host = window.location.hostname;
-    if (host === 'mail.google.com')  return extractGmail();
-    if (host.includes('outlook'))    return extractOutlook();
+    if (host === 'mail.google.com') return extractGmail();
+    if (host.includes('outlook'))   return extractOutlook();
     return null;
   }
 
@@ -84,16 +74,12 @@
 
     if (!subject || !body) return null;
 
-    // Extract SPF/DKIM/DMARC from the Authentication-Results header
-    // Gmail surfaces these in a hidden span with class 'ajz' inside the header area
-    const spf   = extractAuth('spf');
-    const dkim  = extractAuth('dkim');
-    const dmarc = extractAuth('dmarc');
-
     return {
       sender, subject, body,
       urls:  extractUrls(bodyEl.innerHTML),
-      spf, dkim, dmarc,
+      spf:   extractAuth('spf'),
+      dkim:  extractAuth('dkim'),
+      dmarc: extractAuth('dmarc'),
     };
   }
 
@@ -116,25 +102,21 @@
     return {
       sender, subject, body,
       urls:  extractUrls(bodyEl.innerHTML),
-      spf:   'none', dkim: 'none', dmarc: 'none',
+      spf: 'none', dkim: 'none', dmarc: 'none',
     };
   }
 
-  // Try to read SPF/DKIM/DMARC from Gmail's header tooltip text.
-  // Gmail shows "mailed-by" and "signed-by" info in the sender details area.
-  // We look for the authentication status in any visible security detail spans.
   function extractAuth(protocol) {
-    // Gmail sometimes surfaces auth info in .aZy spans (header details)
     const detailSpans = document.querySelectorAll('.aZy, .ajz, [data-tooltip]');
     for (const span of detailSpans) {
       const text = (span.textContent + (span.getAttribute('data-tooltip') || '')).toLowerCase();
       if (text.includes(protocol)) {
-        if (text.includes('pass'))    return 'pass';
-        if (text.includes('fail'))    return 'fail';
+        if (text.includes('pass'))     return 'pass';
+        if (text.includes('fail'))     return 'fail';
         if (text.includes('softfail')) return 'fail';
       }
     }
-    return 'none'; // not found — backend will score without auth signals
+    return 'none';
   }
 
   function extractUrls(html) {
@@ -146,15 +128,24 @@
 
   function triggerAnalysis(emailData) {
     isAnalysing = true;
-
-    // Inject the loading panel — disconnect observer first so our DOM
-    // changes don't fire the observer and cause a loop.
     safeInject(() => injectLoadingPanel());
+
+    // FIX: Add a safety timeout — if the backend never responds,
+    // release the lock after 15 seconds so future emails can be analysed.
+    const safetyRelease = setTimeout(() => {
+      if (isAnalysing) {
+        isAnalysing = false;
+        safeInject(() => injectErrorPanel(
+          'CognitoMail: request timed out. Is your Render service running?'
+        ));
+      }
+    }, 15000);
 
     chrome.runtime.sendMessage(
       { type: 'ANALYZE_EMAIL', email: emailData },
       (response) => {
-        isAnalysing = false;
+        clearTimeout(safetyRelease); // cancel the safety timeout
+        isAnalysing = false;         // FIX: always release the lock
 
         if (chrome.runtime.lastError) {
           safeInject(() => injectErrorPanel(
@@ -174,17 +165,12 @@
     );
   }
 
-  // Wraps any DOM-writing operation: disconnects the observer before
-  // touching the DOM, then reconnects it after. This prevents our own
-  // panel injection from being mistaken for a "new email" event.
   function safeInject(fn) {
     isInjecting = true;
     observer.disconnect();
     try {
       fn();
     } finally {
-      // Reconnect after a short delay — gives the browser time to
-      // finish rendering our changes before we start watching again.
       setTimeout(() => {
         isInjecting = false;
         startObserving();
@@ -195,28 +181,24 @@
   // ── Panel container ────────────────────────────────────────────────────────
 
   function getPanelContainer() {
-    // Always reuse existing container — never create a duplicate.
     let c = document.getElementById('cognitomail-panel-container');
     if (c) return c;
 
     c = document.createElement('div');
     c.id = 'cognitomail-panel-container';
 
-    // Gmail injection point: right after the email body div
     const gmailBody = document.querySelector('.a3s.aiL');
     if (gmailBody) {
       gmailBody.parentNode.insertBefore(c, gmailBody.nextSibling);
       return c;
     }
 
-    // Outlook injection point
     const outlookBody = document.querySelector('[data-testid="emailBodyContainer"]');
     if (outlookBody) {
       outlookBody.parentNode.insertBefore(c, outlookBody.nextSibling);
       return c;
     }
 
-    // Fallback — should rarely be needed
     document.body.appendChild(c);
     return c;
   }
@@ -319,12 +301,10 @@
         </div>
       </div>`;
 
-    // Attach feedback buttons — use addEventListener so we never
-    // accidentally write to the DOM from inside a mutation callback.
     c.querySelectorAll('.cgm-fb-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const predicted   = parseInt(btn.dataset.label);
-        const isCorrect   = parseInt(btn.dataset.correct);
+        const predicted    = parseInt(btn.dataset.label);
+        const isCorrect    = parseInt(btn.dataset.correct);
         const correctLabel = isCorrect ? predicted : (predicted === 1 ? 0 : 1);
         chrome.runtime.sendMessage({
           type: 'SEND_FEEDBACK',
@@ -359,26 +339,24 @@
   }
 
   // ── Navigation listener ────────────────────────────────────────────────────
-  // Gmail uses pushState for navigation. When the user goes back to the
-  // inbox from an email, clear the stored signature so the next email
-  // they open is treated as new.
+  // FIX: Simplified navigation detection — just watch the URL and reset
+  // state whenever the URL changes. Don't try to check the DOM here.
+  // The onDomSettled function handles the case where no email is open.
 
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      // User navigated — if they go back to inbox, reset state
-      if (!location.href.includes('#inbox') && !location.href.includes('?compose')) {
-        // Check if an email is still open; if not, clear the signature
-        setTimeout(() => {
-          if (!document.querySelector('.a3s.aiL')) {
-            lastEmailSignature = null;
-            const old = document.getElementById('cognitomail-panel-container');
-            if (old) old.remove();
-          }
-        }, 500);
-      }
-      // Send clear message to background so popup shows idle state
+
+      // URL changed — reset signature so the next email is treated as new.
+      // FIX: Reset unconditionally here, not conditionally based on DOM state.
+      lastEmailSignature = null;
+      isAnalysing = false; // FIX: also release any stuck lock on navigation
+
+      // Remove the panel — it belongs to the previous email.
+      const old = document.getElementById('cognitomail-panel-container');
+      if (old) old.remove();
+
       chrome.runtime.sendMessage({ type: 'CLEAR_RESULT' });
     }
   }).observe(document.body, { childList: true, subtree: false });
