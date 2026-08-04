@@ -1,22 +1,32 @@
-// background.js
-// Receives analysis results from content.js and stores them
-// so popup.html can retrieve the latest result for the active tab.
+// background.js — CognitoMail (FIXED)
+// FIX: Replaced in-memory tabResults with chrome.storage.session.
+// In MV3 the service worker is killed after ~30s of inactivity, which
+// wiped the in-memory store and caused popup to always show "No email open."
+// chrome.storage.session survives service worker restarts.
 
-const BACKEND_URL = 'https://cognitomail-backend.onrender.com'; // change to your Render URL when deployed
+const BACKEND_URL = 'https://cognitomail-backend.onrender.com';
 
-// Store: tabId → last analysis result
-const tabResults = {};
-
-// Listen for messages from content.js
+// ── Message router ──────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  // Content script sends email data → we call the backend → return result
+  // Content script sends email data → we call the backend → cache result → return
   if (msg.type === 'ANALYZE_EMAIL') {
     const tabId = sender.tab?.id;
-    analyzeEmail(msg.email, tabId)
+    analyzeEmail(msg.email)
       .then(result => {
-        if (tabId) tabResults[tabId] = result;
-        sendResponse({ ok: true, result });
+        // Merge auth fields from the email into the result so popup can display them
+        const enriched = {
+          ...result,
+          spf:   msg.email.spf   || 'none',
+          dkim:  msg.email.dkim  || 'none',
+          dmarc: msg.email.dmarc || 'none',
+        };
+
+        // Cache in session storage — survives service worker termination
+        const cacheEntry = { result: enriched, email: msg.email };
+        chrome.storage.session.set({ [`tab_${tabId}`]: cacheEntry });
+
+        sendResponse({ ok: true, result: enriched });
       })
       .catch(err => {
         sendResponse({ ok: false, error: err.message });
@@ -28,7 +38,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'GET_RESULT') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tabId = tabs[0]?.id;
-      sendResponse({ result: tabResults[tabId] || null });
+      if (!tabId) {
+        sendResponse({ result: null });
+        return;
+      }
+      chrome.storage.session.get([`tab_${tabId}`], (data) => {
+        const entry = data[`tab_${tabId}`];
+        sendResponse({ result: entry?.result || null });
+      });
     });
     return true;
   }
@@ -44,16 +61,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Clear result when user navigates away from an email
   if (msg.type === 'CLEAR_RESULT') {
     const tabId = sender.tab?.id;
-    if (tabId) delete tabResults[tabId];
+    if (tabId) chrome.storage.session.remove([`tab_${tabId}`]);
   }
+  // No return needed — synchronous, no async response
 });
 
 // Clean up stored results when a tab is closed
 chrome.tabs.onRemoved.addListener((tabId) => {
-  delete tabResults[tabId];
+  chrome.storage.session.remove([`tab_${tabId}`]);
 });
 
-async function analyzeEmail(emailData, tabId) {
+// ── Backend calls ────────────────────────────────────────────────────────────
+async function analyzeEmail(emailData) {
   const resp = await fetch(`${BACKEND_URL}/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
