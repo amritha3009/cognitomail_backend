@@ -1,19 +1,23 @@
 // content.js — CognitoMail
-// Fixed version: debounced observer, disconnect during injection,
-// targeted DOM watching to prevent Gmail freezing.
+// Fixes applied:
+// 1. Multi-selector Gmail extraction — handles Gmail class name changes
+// 2. onDomSettled resets lastEmailSignature when no email open (fixes "only first email detected")
+// 3. isAnalysing safety release timeout (fixes permanently stuck lock)
+// 4. All chrome.runtime.sendMessage calls wrapped in try/catch (fixes "context invalidated" error)
+// 5. Navigation listener resets state unconditionally on URL change
 
 (function () {
   'use strict';
 
-  // ── State ──────────────────────────────────────────────────────────────────
   let lastEmailSignature = null;
   let isAnalysing        = false;
   let debounceTimer      = null;
   let isInjecting        = false;
 
-  const DEBOUNCE_MS = 600;
+  const DEBOUNCE_MS = 800;
 
   // ── Observer ───────────────────────────────────────────────────────────────
+
   const observer = new MutationObserver(() => {
     if (isInjecting) return;
     clearTimeout(debounceTimer);
@@ -31,16 +35,16 @@
     startObserving();
   }
 
-  // ── Called once DOM has been quiet for DEBOUNCE_MS ms ─────────────────────
+  // ── DOM settled callback ───────────────────────────────────────────────────
+
   function onDomSettled() {
     if (isAnalysing) return;
 
     const emailData = extractEmailData();
     if (!emailData) {
-      // FIX: If no email is open, reset the signature so the next email
-      // opened is treated as new. This is the core fix for the "only
-      // first email detected" bug — without this, the signature stays
-      // set even when the user returns to the inbox.
+      // FIX: reset signature when no email is open so the next email
+      // opened is treated as new — this is the core fix for "only first
+      // email detected" bug.
       lastEmailSignature = null;
       return;
     }
@@ -62,41 +66,108 @@
   }
 
   function extractGmail() {
-    const subjectEl = document.querySelector('h2.hP');
-    const senderEl  = document.querySelector('.gD');
-    const bodyEl    = document.querySelector('.a3s.aiL');
+    // Subject — try multiple selectors, Gmail changes class names frequently
+    const subjectEl =
+      document.querySelector('h2.hP') ||
+      document.querySelector('[data-thread-perm-id] h2') ||
+      document.querySelector('.ha h2') ||
+      document.querySelector('[role="main"] h2') ||
+      document.querySelector('.a98.iY h2') ||
+      (() => {
+        const main = document.querySelector('[role="main"]');
+        return main ? main.querySelector('h2') : null;
+      })();
 
-    if (!subjectEl || !senderEl || !bodyEl) return null;
+    // Body — try multiple selectors
+    const bodyEl =
+      document.querySelector('.a3s.aiL') ||
+      document.querySelector('.a3s') ||
+      document.querySelector('[role="main"] .ii.gt') ||
+      document.querySelector('.Am.Al.editable') ||
+      document.querySelector('[role="main"] .adP.adO') ||
+      (() => {
+        const candidates = document.querySelectorAll(
+          '[role="main"] div[dir="ltr"], [role="main"] div[dir="auto"]'
+        );
+        for (const el of candidates) {
+          if (el.innerText && el.innerText.trim().length > 50) return el;
+        }
+        return null;
+      })();
+
+    if (!subjectEl || !bodyEl) {
+      console.debug('[CognitoMail] Gmail extraction failed:', {
+        subjectEl: !!subjectEl,
+        bodyEl:    !!bodyEl,
+      });
+      return null;
+    }
 
     const subject = subjectEl.textContent.trim();
-    const sender  = senderEl.getAttribute('email') || senderEl.textContent.trim();
     const body    = bodyEl.innerText.trim();
+    if (!subject || body.length < 5) return null;
 
-    if (!subject || !body) return null;
+    // Sender — try multiple selectors
+    const senderEl =
+      document.querySelector('.gD') ||
+      document.querySelector('[email]') ||
+      document.querySelector('.go') ||
+      document.querySelector('[data-hovercard-id]') ||
+      (() => {
+        const spans = document.querySelectorAll('[role="main"] span, [role="main"] a');
+        for (const s of spans) {
+          if (s.getAttribute('email') ||
+              /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s.textContent.trim())) {
+            return s;
+          }
+        }
+        return null;
+      })();
+
+    let sender = '';
+    if (senderEl) {
+      sender = senderEl.getAttribute('email') ||
+               senderEl.getAttribute('data-hovercard-id') ||
+               senderEl.textContent.trim();
+    }
+    if (!sender) {
+      const fromArea = document.querySelector(
+        '[role="main"] .go, [role="main"] .gD, [role="main"] .zA'
+      );
+      if (fromArea) sender = fromArea.textContent.trim();
+    }
+
+    console.debug('[CognitoMail] Extracted:', {
+      subject, sender, bodyLength: body.length
+    });
 
     return {
-      sender, subject, body,
-      urls:  extractUrls(bodyEl.innerHTML),
-      spf:   extractAuth('spf'),
-      dkim:  extractAuth('dkim'),
-      dmarc: extractAuth('dmarc'),
+      sender:  sender || 'unknown',
+      subject: subject,
+      body:    body,
+      urls:    extractUrls(bodyEl.innerHTML),
+      spf:     extractAuth('spf'),
+      dkim:    extractAuth('dkim'),
+      dmarc:   extractAuth('dmarc'),
     };
   }
 
   function extractOutlook() {
-    const subjectEl = document.querySelector('[data-testid="subject"]')
-                   || document.querySelector('.allowTextSelection');
-    const senderEl  = document.querySelector('[data-testid="senderName"]')
-                   || document.querySelector('.OZZZK');
-    const bodyEl    = document.querySelector('[data-testid="emailBodyContainer"]')
-                   || document.querySelector('.Wr[role="document"]');
+    const subjectEl =
+      document.querySelector('[data-testid="subject"]') ||
+      document.querySelector('.allowTextSelection');
+    const senderEl =
+      document.querySelector('[data-testid="senderName"]') ||
+      document.querySelector('.OZZZK');
+    const bodyEl =
+      document.querySelector('[data-testid="emailBodyContainer"]') ||
+      document.querySelector('.Wr[role="document"]');
 
     if (!subjectEl || !senderEl || !bodyEl) return null;
 
     const subject = subjectEl.textContent.trim();
     const sender  = senderEl.textContent.trim();
     const body    = bodyEl.innerText.trim();
-
     if (!subject || !body) return null;
 
     return {
@@ -109,7 +180,9 @@
   function extractAuth(protocol) {
     const detailSpans = document.querySelectorAll('.aZy, .ajz, [data-tooltip]');
     for (const span of detailSpans) {
-      const text = (span.textContent + (span.getAttribute('data-tooltip') || '')).toLowerCase();
+      const text = (
+        span.textContent + (span.getAttribute('data-tooltip') || '')
+      ).toLowerCase();
       if (text.includes(protocol)) {
         if (text.includes('pass'))     return 'pass';
         if (text.includes('fail'))     return 'fail';
@@ -130,39 +203,46 @@
     isAnalysing = true;
     safeInject(() => injectLoadingPanel());
 
-    // FIX: Add a safety timeout — if the backend never responds,
-    // release the lock after 15 seconds so future emails can be analysed.
+    // FIX: safety timeout releases the lock if backend never responds
     const safetyRelease = setTimeout(() => {
       if (isAnalysing) {
         isAnalysing = false;
         safeInject(() => injectErrorPanel(
-          'CognitoMail: request timed out. Is your Render service running?'
+          'CognitoMail: request timed out after 15 seconds. Is your Render service running?'
         ));
       }
     }, 15000);
 
-    chrome.runtime.sendMessage(
-      { type: 'ANALYZE_EMAIL', email: emailData },
-      (response) => {
-        clearTimeout(safetyRelease); // cancel the safety timeout
-        isAnalysing = false;         // FIX: always release the lock
+    // FIX: wrapped in try/catch to handle invalidated extension context
+    try {
+      chrome.runtime.sendMessage(
+        { type: 'ANALYZE_EMAIL', email: emailData },
+        (response) => {
+          clearTimeout(safetyRelease);
+          isAnalysing = false;
 
-        if (chrome.runtime.lastError) {
-          safeInject(() => injectErrorPanel(
-            'CognitoMail: background not responding. Try reloading the page.'
-          ));
-          return;
-        }
-        if (!response || !response.ok) {
-          safeInject(() => injectErrorPanel(
-            response?.error || 'CognitoMail: backend unreachable. Is your Render service running?'
-          ));
-          return;
-        }
+          if (chrome.runtime.lastError) {
+            safeInject(() => injectErrorPanel(
+              'CognitoMail: background not responding. Try reloading the page.'
+            ));
+            return;
+          }
+          if (!response || !response.ok) {
+            safeInject(() => injectErrorPanel(
+              response?.error ||
+              'CognitoMail: backend unreachable. Is your Render service running?'
+            ));
+            return;
+          }
 
-        safeInject(() => injectResultPanel(response.result, emailData));
-      }
-    );
+          safeInject(() => injectResultPanel(response.result, emailData));
+        }
+      );
+    } catch (e) {
+      clearTimeout(safetyRelease);
+      isAnalysing = false;
+      console.debug('[CognitoMail] Extension context invalidated — reload the tab.');
+    }
   }
 
   function safeInject(fn) {
@@ -186,14 +266,21 @@
 
     c = document.createElement('div');
     c.id = 'cognitomail-panel-container';
+    c.style.cssText =
+      'margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;';
 
-    const gmailBody = document.querySelector('.a3s.aiL');
+    const gmailBody =
+      document.querySelector('.a3s.aiL') ||
+      document.querySelector('.a3s') ||
+      document.querySelector('[role="main"] .ii.gt');
+
     if (gmailBody) {
       gmailBody.parentNode.insertBefore(c, gmailBody.nextSibling);
       return c;
     }
 
-    const outlookBody = document.querySelector('[data-testid="emailBodyContainer"]');
+    const outlookBody =
+      document.querySelector('[data-testid="emailBodyContainer"]');
     if (outlookBody) {
       outlookBody.parentNode.insertBefore(c, outlookBody.nextSibling);
       return c;
@@ -240,13 +327,14 @@
 
     const flagsHTML = (data.flags || []).map(f =>
       `<div class="cgm-flag">${f}</div>`
-    ).join('') || '<div class="cgm-flag cgm-flag-ok">No significant phishing signals detected.</div>';
+    ).join('') ||
+      '<div class="cgm-flag cgm-flag-ok">No significant phishing signals detected.</div>';
 
     const authChip = (label, val) => {
       const cls = val === 'pass' ? 'cgm-auth-pass'
                 : val === 'fail' ? 'cgm-auth-fail'
                 : 'cgm-auth-unknown';
-      return `<span class="cgm-auth ${cls}">${label}: ${(val || 'none').toUpperCase()}</span>`;
+      return `<span class="cgm-auth ${cls}">${label}: ${(val||'none').toUpperCase()}</span>`;
     };
 
     const predictedLabel = score >= 50 ? 1 : 0;
@@ -279,7 +367,9 @@
               <div class="cgm-score-label">Risk Score</div>
               <div class="cgm-score-sublabel">out of 100</div>
               <div class="cgm-method-badge">${data.method === 'ml' ? '🤖 ML Model' : '📋 Rule-based'}</div>
-              ${data.confidence !== null ? `<div class="cgm-conf">Confidence: ${Math.round(data.confidence * 100)}%</div>` : ''}
+              ${data.confidence !== null
+                ? `<div class="cgm-conf">Confidence: ${Math.round(data.confidence * 100)}%</div>`
+                : ''}
             </div>
           </div>
 
@@ -301,17 +391,27 @@
         </div>
       </div>`;
 
+    // FIX: feedback buttons wrapped in try/catch
     c.querySelectorAll('.cgm-fb-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const predicted    = parseInt(btn.dataset.label);
         const isCorrect    = parseInt(btn.dataset.correct);
         const correctLabel = isCorrect ? predicted : (predicted === 1 ? 0 : 1);
-        chrome.runtime.sendMessage({
-          type: 'SEND_FEEDBACK',
-          payload: { email: emailData, predicted_label: predicted, correct_label: correctLabel },
-        });
+        try {
+          chrome.runtime.sendMessage({
+            type: 'SEND_FEEDBACK',
+            payload: {
+              email:           emailData,
+              predicted_label: predicted,
+              correct_label:   correctLabel,
+            },
+          });
+        } catch (e) {
+          console.debug('[CognitoMail] Feedback not sent — context invalidated.');
+        }
         const row = c.querySelector('.cgm-feedback-row');
-        if (row) row.innerHTML = '<span style="color:#00c9a7;font-weight:600">✓ Feedback recorded — thank you!</span>';
+        if (row) row.innerHTML =
+          '<span style="color:#00c9a7;font-weight:600">✓ Feedback recorded — thank you!</span>';
       });
     });
   }
@@ -339,25 +439,22 @@
   }
 
   // ── Navigation listener ────────────────────────────────────────────────────
-  // FIX: Simplified navigation detection — just watch the URL and reset
-  // state whenever the URL changes. Don't try to check the DOM here.
-  // The onDomSettled function handles the case where no email is open.
 
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-
-      // URL changed — reset signature so the next email is treated as new.
-      // FIX: Reset unconditionally here, not conditionally based on DOM state.
+      // FIX: reset all state unconditionally on URL change
       lastEmailSignature = null;
-      isAnalysing = false; // FIX: also release any stuck lock on navigation
-
-      // Remove the panel — it belongs to the previous email.
+      isAnalysing        = false;
       const old = document.getElementById('cognitomail-panel-container');
       if (old) old.remove();
-
-      chrome.runtime.sendMessage({ type: 'CLEAR_RESULT' });
+      // FIX: wrapped in try/catch
+      try {
+        chrome.runtime.sendMessage({ type: 'CLEAR_RESULT' });
+      } catch (e) {
+        console.debug('[CognitoMail] CLEAR_RESULT not sent — context invalidated.');
+      }
     }
   }).observe(document.body, { childList: true, subtree: false });
 

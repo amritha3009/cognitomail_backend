@@ -33,7 +33,6 @@
     font-size: 13px;
   }
 
-  /* ── Header ─────────────────────────────────────────────────────────────── */
   .header {
     background: var(--bg-deep);
     padding: 14px 16px 12px;
@@ -52,10 +51,7 @@
   }
 
   .logo-mark svg { width: 18px; height: 18px; }
-
-  .logo-text {
-    flex: 1;
-  }
+  .logo-text { flex: 1; }
 
   .logo-name {
     font-size: 15px;
@@ -85,11 +81,9 @@
     50%       { opacity: 0.6; box-shadow: 0 0 12px var(--teal); }
   }
 
-  /* ── States ──────────────────────────────────────────────────────────────── */
   .screen { display: none; }
   .screen.active { display: block; }
 
-  /* ── Idle state (no email open) ─────────────────────────────────────────── */
   #screen-idle {
     padding: 32px 20px;
     text-align: center;
@@ -149,7 +143,6 @@
     margin-top: 1px;
   }
 
-  /* ── Loading state ───────────────────────────────────────────────────────── */
   #screen-loading {
     padding: 28px 20px;
     text-align: center;
@@ -195,10 +188,8 @@
   .loading-step.done { color: var(--teal); }
   .loading-step.active { color: var(--text-mid); }
 
-  /* ── Result state ────────────────────────────────────────────────────────── */
   #screen-result { padding: 0; }
 
-  /* Score hero */
   .score-hero {
     padding: 16px;
     background: var(--bg-panel);
@@ -276,7 +267,6 @@
     border-radius: 6px;
   }
 
-  /* Sections */
   .section {
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
@@ -293,7 +283,6 @@
     margin-bottom: 8px;
   }
 
-  /* Flags */
   .flag {
     display: flex;
     align-items: flex-start;
@@ -315,11 +304,7 @@
     color: var(--text-lo);
   }
 
-  /* Auth chips */
-  .auth-row {
-    display: flex;
-    gap: 6px;
-  }
+  .auth-row { display: flex; gap: 6px; }
 
   .auth-chip {
     font-family: var(--mono);
@@ -334,7 +319,6 @@
   .auth-fail    { background: var(--red-dim);   color: var(--red); }
   .auth-unknown { background: var(--bg-hover);  color: var(--text-lo); }
 
-  /* Feedback */
   .feedback-row {
     display: flex;
     align-items: center;
@@ -364,10 +348,7 @@
   .fb-no  { border-color: #5c1a1a; color: var(--red); }
   .fb-no:hover  { background: var(--red-dim); }
 
-  /* Error state */
-  #screen-error {
-    padding: 24px 16px;
-  }
+  #screen-error { padding: 24px 16px; }
 
   .error-title {
     display: flex;
@@ -396,7 +377,6 @@
     color: var(--teal);
   }
 
-  /* Footer */
   .footer {
     padding: 8px 16px;
     border-top: 1px solid var(--border);
@@ -430,7 +410,6 @@
 </head>
 <body>
 
-<!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <div class="header">
   <div class="logo-mark">
     <svg viewBox="0 0 24 24" fill="none">
@@ -444,7 +423,6 @@
   <div class="status-dot" id="statusDot"></div>
 </div>
 
-<!-- ── Idle ────────────────────────────────────────────────────────────────── -->
 <div id="screen-idle" class="screen active">
   <div class="idle-icon">📭</div>
   <div class="idle-title">No email open</div>
@@ -465,7 +443,6 @@
   </div>
 </div>
 
-<!-- ── Loading ─────────────────────────────────────────────────────────────── -->
 <div id="screen-loading" class="screen">
   <div class="loading-spinner"></div>
   <div class="loading-title">Analysing email…</div>
@@ -476,9 +453,7 @@
   </div>
 </div>
 
-<!-- ── Result ──────────────────────────────────────────────────────────────── -->
 <div id="screen-result" class="screen">
-
   <div class="score-hero">
     <div class="gauge-wrap">
       <svg class="gauge-svg" viewBox="0 0 80 80">
@@ -491,9 +466,7 @@
     <div class="hero-right">
       <div class="verdict-pill" id="verdictPill">—</div>
       <div class="hero-sub">Risk score out of 100</div>
-      <div class="method-chip" id="methodChip">
-        <span>—</span>
-      </div>
+      <div class="method-chip" id="methodChip"><span>—</span></div>
     </div>
   </div>
 
@@ -514,17 +487,15 @@
   </div>
 </div>
 
-<!-- ── Error ───────────────────────────────────────────────────────────────── -->
 <div id="screen-error" class="screen">
   <div class="error-title">⚠️ Backend not reachable</div>
   <div class="error-msg" id="errorMsg">The Flask server is not running.</div>
   <div class="code-block">py src/app.py</div>
 </div>
 
-<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
 <div class="footer">
   <span class="footer-text" id="footerText">CognitoMail v1.0 · MSc Research</span>
-  <button class="footer-refresh" onclick="loadResult()">↺ Refresh</button>
+  <button class="footer-refresh" id="refreshBtn">↺ Refresh</button>
 </div>
 
 <script src="popup.js"></script>

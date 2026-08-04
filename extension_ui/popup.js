@@ -1,8 +1,9 @@
 // popup.js
-// Retrieves the latest analysis result from background.js and renders it.
+// FIX: refreshBtn now wired via addEventListener instead of onclick
+// to satisfy Chrome MV3 Content Security Policy.
 
-let currentResult  = null;
-let currentEmail   = null;
+let currentResult = null;
+let currentEmail  = null;
 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -15,56 +16,52 @@ function authClass(val) {
 
 function renderResult(data) {
   currentResult = data;
-  const score   = data.risk_score;
-  const circumference = 201; // 2 * π * 32
+  const score = data.risk_score;
+  const circumference = 201;
 
-  // Gauge colour
   const colour = score >= 70 ? '#ea4335' : score >= 40 ? '#f9ab00' : '#00c9a7';
 
-  // Animate gauge
   const fill = document.getElementById('gaugeFill');
   fill.setAttribute('stroke', colour);
-  // start at 0 then animate
   setTimeout(() => {
-    fill.setAttribute('stroke-dasharray', `${Math.round(score * circumference / 100)} ${circumference}`);
+    fill.setAttribute('stroke-dasharray',
+      `${Math.round(score * circumference / 100)} ${circumference}`);
   }, 60);
 
-  document.getElementById('scoreNum').textContent  = score;
+  document.getElementById('scoreNum').textContent = score;
   document.getElementById('scoreNum').style.color  = colour;
 
-  // Verdict pill
   const pill = document.getElementById('verdictPill');
-  pill.textContent  = data.verdict;
-  pill.className    = 'verdict-pill ' + (score >= 70 ? 'verdict-high' : score >= 40 ? 'verdict-med' : 'verdict-low');
+  pill.textContent = data.verdict;
+  pill.className   = 'verdict-pill ' +
+    (score >= 70 ? 'verdict-high' : score >= 40 ? 'verdict-med' : 'verdict-low');
 
-  // Method chip
   const chip = document.getElementById('methodChip');
   chip.innerHTML = data.method === 'ml'
-    ? '🤖 ML Model' + (data.confidence !== null ? ` · ${Math.round(data.confidence * 100)}% confidence` : '')
+    ? '🤖 ML Model' +
+      (data.confidence !== null
+        ? ` · ${Math.round(data.confidence * 100)}% confidence`
+        : '')
     : '📋 Rule-based fallback';
 
-  // Flags / findings
-  const flags = data.flags || [];
+  const flags  = data.flags || [];
   const flagsEl = document.getElementById('flagsContainer');
   if (flags.length === 0) {
-    flagsEl.innerHTML = '<div class="flag flag-safe">No significant phishing signals detected.</div>';
+    flagsEl.innerHTML =
+      '<div class="flag flag-safe">No significant phishing signals detected.</div>';
   } else {
-    flagsEl.innerHTML = flags.map(f =>
-      `<div class="flag">${f}</div>`
-    ).join('');
+    flagsEl.innerHTML = flags.map(f => `<div class="flag">${f}</div>`).join('');
   }
 
-  // Auth chips — pull from stored email data if available
-  const spf   = (data.spf  || 'none');
-  const dkim  = (data.dkim || 'none');
-  const dmarc = (data.dmarc|| 'none');
+  const spf   = data.spf   || 'none';
+  const dkim  = data.dkim  || 'none';
+  const dmarc = data.dmarc || 'none';
   document.getElementById('authRow').innerHTML = [
     ['SPF', spf], ['DKIM', dkim], ['DMARC', dmarc]
   ].map(([label, val]) =>
     `<span class="auth-chip ${authClass(val)}">${label}: ${val.toUpperCase()}</span>`
   ).join('');
 
-  // Footer
   document.getElementById('footerText').textContent =
     `Analysed just now · ${data.method === 'ml' ? 'ML' : 'Rules'} · v1.0`;
 
@@ -77,64 +74,79 @@ function setupFeedback() {
   document.getElementById('fbYes').onclick = () => {
     if (!currentResult) return;
     const predicted = currentResult.risk_score >= 50 ? 1 : 0;
-    sendFeedback(predicted, predicted); // correct = same as predicted
-    row.innerHTML = '<span style="color:#00c9a7;font-weight:600">✓ Feedback recorded — thank you!</span>';
+    sendFeedback(predicted, predicted);
+    row.innerHTML =
+      '<span style="color:#00c9a7;font-weight:600">✓ Feedback recorded — thank you!</span>';
   };
 
   document.getElementById('fbNo').onclick = () => {
     if (!currentResult) return;
     const predicted = currentResult.risk_score >= 50 ? 1 : 0;
-    const correct   = predicted === 1 ? 0 : 1; // flip
+    const correct   = predicted === 1 ? 0 : 1;
     sendFeedback(predicted, correct);
-    row.innerHTML = '<span style="color:#00c9a7;font-weight:600">✓ Feedback recorded — thank you!</span>';
+    row.innerHTML =
+      '<span style="color:#00c9a7;font-weight:600">✓ Feedback recorded — thank you!</span>';
   };
 }
 
 function sendFeedback(predictedLabel, correctLabel) {
-  chrome.runtime.sendMessage({
-    type: 'SEND_FEEDBACK',
-    payload: {
-      email:           currentEmail || {},
-      predicted_label: predictedLabel,
-      correct_label:   correctLabel,
-    }
-  });
+  // FIX: wrapped in try/catch — extension context may be invalidated
+  // if the extension was reloaded since this popup was opened.
+  try {
+    chrome.runtime.sendMessage({
+      type: 'SEND_FEEDBACK',
+      payload: {
+        email:           currentEmail || {},
+        predicted_label: predictedLabel,
+        correct_label:   correctLabel,
+      }
+    });
+  } catch (e) {
+    console.debug('[CognitoMail] Could not send feedback — context invalidated.');
+  }
 }
 
 function loadResult() {
   showScreen('screen-loading');
 
-  // Animate loading steps
   setTimeout(() => {
     document.getElementById('step-auth').className  = 'loading-step done';
     document.getElementById('step-urls').className  = 'loading-step done';
     document.getElementById('step-ml').className    = 'loading-step active';
   }, 400);
 
-  chrome.runtime.sendMessage({ type: 'GET_RESULT' }, (response) => {
-    if (chrome.runtime.lastError || !response) {
-      showScreen('screen-idle');
-      return;
-    }
+  // FIX: wrapped in try/catch — extension context may be invalidated
+  try {
+    chrome.runtime.sendMessage({ type: 'GET_RESULT' }, (response) => {
+      if (chrome.runtime.lastError || !response) {
+        showScreen('screen-idle');
+        return;
+      }
 
-    const result = response.result;
+      const result = response.result;
 
-    if (!result) {
-      // No email open yet
-      showScreen('screen-idle');
-      return;
-    }
+      if (!result) {
+        showScreen('screen-idle');
+        return;
+      }
 
-    if (result.error) {
-      document.getElementById('errorMsg').textContent = result.error;
-      showScreen('screen-error');
-      return;
-    }
+      if (result.error) {
+        document.getElementById('errorMsg').textContent = result.error;
+        showScreen('screen-error');
+        return;
+      }
 
-    renderResult(result);
-    setupFeedback();
-  });
+      renderResult(result);
+      setupFeedback();
+    });
+  } catch (e) {
+    // Extension was reloaded — just show idle state
+    showScreen('screen-idle');
+  }
 }
 
-// Run on popup open
-document.addEventListener('DOMContentLoaded', loadResult);
+document.addEventListener('DOMContentLoaded', () => {
+  // FIX: wire refresh button here instead of onclick in HTML (CSP fix)
+  document.getElementById('refreshBtn').addEventListener('click', loadResult);
+  loadResult();
+});
