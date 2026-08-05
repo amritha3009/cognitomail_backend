@@ -31,9 +31,13 @@ document.addEventListener("click", () => {
   });
 
   function startObserving() {
-    const target = document.querySelector('[role="main"]') || document.body;
-    observer.observe(target, { childList: true, subtree: true });
-  }
+    console.log("[CognitoMail] Observer started");
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+}
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startObserving);
@@ -44,9 +48,11 @@ document.addEventListener("click", () => {
   // ── DOM settled callback ───────────────────────────────────────────────────
 
   function onDomSettled() {
+    console.log("onDomSettled()");
     if (isAnalysing) return;
 
     const emailData = extractEmailData();
+    console.log(emailData);
     if (!emailData) {
       // FIX: reset signature when no email is open so the next email
       // opened is treated as new — this is the core fix for "only first
@@ -65,10 +71,10 @@ document.addEventListener("click", () => {
   // ── DOM Extraction ─────────────────────────────────────────────────────────
 
   function extractEmailData() {
+    console.log("extractEmailData() called");
     const host = window.location.hostname;
     if (host === 'mail.google.com') return extractGmail();
     if (host.includes('outlook'))   return extractOutlook();
-    console.log("extractEmailData() called");
     return null;
   }
 
@@ -452,21 +458,21 @@ document.addEventListener("click", () => {
   // ── Navigation listener ────────────────────────────────────────────────────
 
   let lastUrl = location.href;
-  new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      // FIX: reset all state unconditionally on URL change
-      lastEmailSignature = null;
-      isAnalysing        = false;
-      const old = document.getElementById('cognitomail-panel-container');
-      if (old) old.remove();
-      // FIX: wrapped in try/catch
-      try {
-        chrome.runtime.sendMessage({ type: 'CLEAR_RESULT' });
-      } catch (e) {
-        console.debug('[CognitoMail] CLEAR_RESULT not sent — context invalidated.');
-      }
-    }
-  }).observe(document.body, { childList: true, subtree: false });
+  const observer = new MutationObserver(() => {
+
+    console.log("Mutation detected");
+
+    if (isInjecting) return;
+
+    clearTimeout(debounceTimer);
+
+    debounceTimer = setTimeout(() => {
+
+        console.log("DOM settled");
+
+        onDomSettled();
+
+    }, DEBOUNCE_MS);
+});
 
 })();
