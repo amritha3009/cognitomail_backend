@@ -5,7 +5,7 @@
 // 3. isAnalysing safety release timeout (fixes permanently stuck lock)
 // 4. All chrome.runtime.sendMessage calls wrapped in try/catch (fixes "context invalidated" error)
 // 5. Navigation listener resets state unconditionally on URL change
-
+console.log("===== CognitoMail content script loaded =====");
 (function () {
   'use strict';
 
