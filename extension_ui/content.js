@@ -6,6 +6,12 @@
 // 4. All chrome.runtime.sendMessage calls wrapped in try/catch (fixes "context invalidated" error)
 // 5. Navigation listener resets state unconditionally on URL change
 console.log("===== CognitoMail content script loaded =====");
+console.log("Current URL:", window.location.href);
+
+document.addEventListener("click", () => {
+    console.log("Click detected");
+});
+
 (function () {
   'use strict';
 
@@ -62,6 +68,7 @@ console.log("===== CognitoMail content script loaded =====");
     const host = window.location.hostname;
     if (host === 'mail.google.com') return extractGmail();
     if (host.includes('outlook'))   return extractOutlook();
+    console.log("extractEmailData() called");
     return null;
   }
 
@@ -75,6 +82,7 @@ console.log("===== CognitoMail content script loaded =====");
       document.querySelector('.a98.iY h2') ||
       (() => {
         const main = document.querySelector('[role="main"]');
+        console.log("extractGmail() called");
         return main ? main.querySelector('h2') : null;
       })();
 
@@ -156,12 +164,15 @@ console.log("===== CognitoMail content script loaded =====");
     const subjectEl =
       document.querySelector('[data-testid="subject"]') ||
       document.querySelector('.allowTextSelection');
+      console.log(subjectEl);
     const senderEl =
       document.querySelector('[data-testid="senderName"]') ||
       document.querySelector('.OZZZK');
+      console.log(senderEl);
     const bodyEl =
       document.querySelector('[data-testid="emailBodyContainer"]') ||
       document.querySelector('.Wr[role="document"]');
+      console.log(bodyEl);
 
     if (!subjectEl || !senderEl || !bodyEl) return null;
 
