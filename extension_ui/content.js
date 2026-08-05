@@ -25,10 +25,22 @@ document.addEventListener("click", () => {
   // ── Observer ───────────────────────────────────────────────────────────────
 
   const observer = new MutationObserver(() => {
+
+    console.log("[CognitoMail] Mutation detected");
+
     if (isInjecting) return;
+
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(onDomSettled, DEBOUNCE_MS);
-  });
+
+    debounceTimer = setTimeout(() => {
+
+        console.log("[CognitoMail] DOM settled");
+
+        onDomSettled();
+
+    }, DEBOUNCE_MS);
+
+});
 
   function startObserving() {
     console.log("[CognitoMail] Observer started");
@@ -79,6 +91,7 @@ document.addEventListener("click", () => {
   }
 
   function extractGmail() {
+    console.log("extractGmail() called");
     // Subject — try multiple selectors, Gmail changes class names frequently
     const subjectEl =
       document.querySelector('h2.hP') ||
@@ -88,7 +101,6 @@ document.addEventListener("click", () => {
       document.querySelector('.a98.iY h2') ||
       (() => {
         const main = document.querySelector('[role="main"]');
-        console.log("extractGmail() called");
         return main ? main.querySelector('h2') : null;
       })();
 
@@ -457,22 +469,34 @@ document.addEventListener("click", () => {
 
   // ── Navigation listener ────────────────────────────────────────────────────
 
-  let lastUrl = location.href;
-  const observer = new MutationObserver(() => {
+let lastUrl = location.href;
 
-    console.log("Mutation detected");
+new MutationObserver(() => {
 
-    if (isInjecting) return;
+    if (location.href !== lastUrl) {
 
-    clearTimeout(debounceTimer);
+        console.log("[CognitoMail] URL changed");
 
-    debounceTimer = setTimeout(() => {
+        lastUrl = location.href;
 
-        console.log("DOM settled");
+        lastEmailSignature = null;
+        isAnalysing = false;
 
-        onDomSettled();
+        const old = document.getElementById("cognitomail-panel-container");
+        if (old) old.remove();
 
-    }, DEBOUNCE_MS);
+        try {
+            chrome.runtime.sendMessage({
+                type: "CLEAR_RESULT"
+            });
+        } catch (e) {
+            console.debug("[CognitoMail] CLEAR_RESULT failed");
+        }
+    }
+
+}).observe(document.body, {
+    childList: true,
+    subtree: true
 });
 
 })();
