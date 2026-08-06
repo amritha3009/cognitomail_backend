@@ -1,17 +1,17 @@
 """
 app.py
 ------
-Flask REST API — the bridge between the browser extension and the ML model.
+Flask REST API — bridge between the browser extension and the ML model.
 
 Endpoints:
-    POST /analyze        ← extension sends email data, gets back a verdict
-    GET  /health         ← health check
-    GET  /model-info     ← metadata about the loaded model
-    POST /feedback       ← user corrections for future retraining
+    POST /analyze
+    GET  /health
+    GET  /model-info
+    POST /feedback
 
-Environment variables (set on Render):
-    VT_API_KEY           ← VirusTotal API key (optional but recommended)
-    PORT                 ← set automatically by Render
+Environment variables (Render):
+    VT_API_KEY
+    PORT
 """
 
 import os
@@ -31,8 +31,6 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
-
-# Allow browser extension + any local testing
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ---------------------------------------------------------------------------
@@ -67,16 +65,11 @@ load_model()
 # ---------------------------------------------------------------------------
 
 def get_sender_domain(sender: str) -> str:
-    """Extract domain from an email address string."""
     m = re.search(r"@([\w.\-]+)", sender or "")
     return m.group(1).lower() if m else ""
 
 
 def virustotal_domain_report(domain: str) -> dict:
-    """
-    Query VirusTotal domain report (v3 API).
-    Returns a compact summary. Never raises — always returns a dict.
-    """
     if not domain:
         return {"available": False, "reason": "no_domain"}
     if not VT_API_KEY:
@@ -122,8 +115,6 @@ def virustotal_domain_report(domain: str) -> dict:
 
 
 def build_details(email: dict, feat_vals: list) -> dict:
-    """Human-readable signal summary from the 30-feature vector."""
-    # Indices match FEATURE_NAMES / extract_features order
     return {
         "sender_domain": get_sender_domain(email.get("sender", "")),
         "free_email_domain": bool(feat_vals[3]),
@@ -145,6 +136,116 @@ def build_details(email: dict, feat_vals: list) -> dict:
         "hidden_text_elements": int(feat_vals[28]),
         "redirect_link_count": int(feat_vals[29]),
     }
+
+
+def apply_hard_rules(result: dict, feat_vals: list) -> dict:
+    """
+    Hybrid post-processing: boost ML/rule score when high-confidence
+    phishing signals are present. Fixes false negatives where the
+    Random Forest under-weights SPF/DKIM/DMARC (importance ≈ 0 in training).
+    """
+    score = int(result.get("risk_score", 0))
+    flags = list(result.get("flags") or [])
+    boost = 0
+
+    spf_fail = feat_vals[0] == 0
+    dkim_fail = feat_vals[1] == 0
+    dmarc_fail = feat_vals[2] == 0
+    auth_fails = sum([spf_fail, dkim_fail, dmarc_fail])
+
+    # Multiple authentication failures
+    if auth_fails >= 3:
+        boost += 30
+        flags.append("All authentication checks failed (SPF + DKIM + DMARC)")
+    elif auth_fails == 2:
+        boost += 22
+        flags.append("Multiple email authentication failures (SPF/DKIM/DMARC)")
+    elif auth_fails == 1:
+        boost += 10
+
+    # Brand impersonation + any auth failure (classic phishing)
+    brand = feat_vals[15]
+    if brand > 0 and auth_fails >= 1:
+        boost += 20
+        flags.append("Brand impersonation combined with failed authentication")
+    elif brand > 0:
+        boost += 8
+        flags.append("Brand name impersonation detected")
+
+    # Credential-harvesting language
+    if feat_vals[14] > 0:
+        boost += 12
+        if "Credential-harvesting language detected" not in flags and \
+           "Credential-related words detected" not in flags:
+            flags.append("Credential-harvesting language detected")
+
+    # Urgency
+    if feat_vals[8] > 0 or feat_vals[12] > 1:
+        boost += 8
+        if "Urgency words in subject" not in " ".join(flags) and \
+           "Multiple urgency words in body" not in " ".join(flags):
+            flags.append("Urgency language detected")
+
+    # Reward / lottery language
+    if feat_vals[13] > 0:
+        boost += 8
+
+    # IP-based URL
+    if feat_vals[21]:
+        boost += 15
+        if "URL uses IP address instead of domain name" not in flags and \
+           "URL contains an IP address instead of a domain" not in flags:
+            flags.append("URL uses IP address instead of domain name")
+
+    # Non-HTTPS links
+    if feat_vals[23] > 0:
+        boost += 8
+        if "Non-HTTPS links present" not in flags and \
+           "Non-HTTPS URLs found" not in " ".join(flags):
+            flags.append("Non-HTTPS links present")
+
+    # Suspicious TLD
+    if feat_vals[22] > 0:
+        boost += 12
+        if "Suspicious top-level domain" not in " ".join(flags):
+            flags.append("Suspicious top-level domain in URL")
+
+    # Hidden content / forms / redirects
+    if feat_vals[28] > 0:
+        boost += 10
+    if feat_vals[27] > 0:
+        boost += 8
+    if feat_vals[29] > 0:
+        boost += 8
+
+    new_score = min(100, score + boost)
+
+    if new_score >= 70:
+        verdict, colour = "Phishing", "red"
+    elif new_score >= 40:
+        verdict, colour = "Suspicious", "orange"
+    else:
+        verdict, colour = "Likely Safe", "green"
+
+    # Deduplicate flags
+    seen = set()
+    unique_flags = []
+    for f in flags:
+        if f not in seen:
+            seen.add(f)
+            unique_flags.append(f)
+
+    method = result.get("method", "ml")
+    if boost > 0 and "+rules" not in method:
+        method = f"{method}+rules"
+
+    result["risk_score"] = new_score
+    result["verdict"] = verdict
+    result["colour"] = colour
+    result["flags"] = unique_flags
+    result["method"] = method
+    result["rule_boost"] = boost
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +306,7 @@ def rule_based_score(email: dict) -> dict:
     else:
         verdict, colour = "Likely Safe", "green"
 
-    return {
+    result = {
         "verdict": verdict,
         "risk_score": score,
         "colour": colour,
@@ -214,6 +315,7 @@ def rule_based_score(email: dict) -> dict:
         "confidence": None,
         "details": build_details(email, feats),
     }
+    return apply_hard_rules(result, feats)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +324,7 @@ def rule_based_score(email: dict) -> dict:
 
 def ml_score(email: dict) -> dict:
     feats = np.array([extract_features(email)], dtype=np.float32)
-    proba = pipeline.predict_proba(feats)[0]  # [P(legit), P(phishing)]
+    proba = pipeline.predict_proba(feats)[0]
     phish_prob = float(proba[1])
     risk_score = int(phish_prob * 100)
 
@@ -267,7 +369,7 @@ def ml_score(email: dict) -> dict:
         else:
             flags.append("Combination of low-level signals raised suspicion")
 
-    return {
+    result = {
         "verdict": verdict,
         "risk_score": risk_score,
         "colour": colour,
@@ -276,6 +378,7 @@ def ml_score(email: dict) -> dict:
         "confidence": round(phish_prob, 4),
         "details": build_details(email, feat_vals.tolist()),
     }
+    return apply_hard_rules(result, feat_vals.tolist())
 
 
 # ---------------------------------------------------------------------------
@@ -306,20 +409,6 @@ def model_info():
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    """
-    Expects JSON:
-    {
-        "sender":  "...",
-        "subject": "...",
-        "body":    "...",
-        "urls":    ["..."],
-        "spf":     "pass|fail|none",
-        "dkim":    "pass|fail|none",
-        "dmarc":   "pass|fail|none"
-    }
-
-    Returns verdict + risk_score + flags + details + virustotal.
-    """
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Request body must be JSON"}), 400
@@ -345,20 +434,20 @@ def analyze():
         log.error(f"Analysis error: {e}")
         return jsonify({"error": "Analysis failed", "detail": str(e)}), 500
 
-    # --- VirusTotal domain lookup ---
+    # VirusTotal domain lookup
     domain = get_sender_domain(email_dict["sender"])
     vt = virustotal_domain_report(domain)
     result["sender_domain"] = domain
     result["virustotal"] = vt
 
-    # Raise score slightly when VT strongly flags the domain
+    # Extra boost from VirusTotal
     if vt.get("available") and vt.get("malicious", 0) >= 3:
-        boost = min(20, vt["malicious"] * 3)
-        result["risk_score"] = min(100, result["risk_score"] + boost)
+        extra = min(20, vt["malicious"] * 3)
+        result["risk_score"] = min(100, result["risk_score"] + extra)
         result["flags"].append(
             f"VirusTotal: {vt['malicious']} engines flagged domain as malicious"
         )
-        # Re-evaluate verdict after boost
+        result["rule_boost"] = result.get("rule_boost", 0) + extra
         s = result["risk_score"]
         if s >= 70:
             result["verdict"], result["colour"] = "Phishing", "red"
@@ -373,7 +462,8 @@ def analyze():
 
     log.info(
         f"Analyzed | verdict={result['verdict']} score={result['risk_score']} "
-        f"method={result['method']} domain={domain} vt={vt.get('available')}"
+        f"boost={result.get('rule_boost', 0)} method={result['method']} "
+        f"domain={domain} vt={vt.get('available')}"
     )
     return jsonify(result)
 
