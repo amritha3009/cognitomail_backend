@@ -88,7 +88,7 @@ def domains_from_urls(urls: list) -> list:
             found.append(host)
         except Exception:
             continue
-    return found[:5]
+    return found[:2]
 
 
 def virustotal_domain_report(domain: str) -> dict:
@@ -99,7 +99,7 @@ def virustotal_domain_report(domain: str) -> dict:
 
     try:
         url = f"https://www.virustotal.com/api/v3/domains/{domain}"
-        r = requests.get(url, headers={"x-apikey": VT_API_KEY}, timeout=8)
+        r = requests.get(url, headers={"x-apikey": VT_API_KEY}, timeout=2.5)
 
         if r.status_code == 404:
             return {"available": False, "reason": "domain_not_found", "domain": domain}
@@ -475,15 +475,29 @@ def analyze():
         log.error(f"Analysis error: {e}")
         return jsonify({"error": "Analysis failed", "detail": str(e)}), 500
 
-    # VirusTotal: sender + link domains
+        # VirusTotal — fast path: sender domain only (optional 1 link domain)
     sender_domain = get_sender_domain(email_dict["sender"])
     link_domains = domains_from_urls(email_dict["urls"])
+
     domains_to_check = []
-    for d in [sender_domain] + link_domains:
+    if sender_domain:
+        domains_to_check.append(sender_domain)
+    for d in link_domains:
         if d and d not in domains_to_check:
             domains_to_check.append(d)
+            break  # at most one link domain
 
-    vt_multi = virustotal_multi(domains_to_check)
+    # Skip VT entirely if no key (instant)
+    if not VT_API_KEY or not domains_to_check:
+        vt_multi = {
+            "available": False,
+            "reason": "skipped",
+            "queried": domains_to_check,
+            "reports": [],
+        }
+    else:
+        vt_multi = virustotal_multi(domains_to_check)
+
     result["sender_domain"] = sender_domain
     result["link_domains"] = link_domains
     result["virustotal"] = vt_multi
@@ -499,18 +513,17 @@ def analyze():
                 f"VirusTotal: {mal} engines flagged {worst} as malicious"
             )
             result["rule_boost"] = result.get("rule_boost", 0) + extra
+            s = result["risk_score"]
+            if s >= 70:
+                result["verdict"], result["colour"] = "Phishing", "red"
+            elif s >= 40:
+                result["verdict"], result["colour"] = "Suspicious", "orange"
+            else:
+                result["verdict"], result["colour"] = "Likely Safe", "green"
         elif sus >= 5:
             result["flags"].append(
                 f"VirusTotal: {sus} engines marked {worst} as suspicious"
             )
-
-        s = result["risk_score"]
-        if s >= 70:
-            result["verdict"], result["colour"] = "Phishing", "red"
-        elif s >= 40:
-            result["verdict"], result["colour"] = "Suspicious", "orange"
-        else:
-            result["verdict"], result["colour"] = "Likely Safe", "green"
 
     log.info(
         f"Analyzed | verdict={result['verdict']} score={result['risk_score']} "
