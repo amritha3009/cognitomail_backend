@@ -4,7 +4,7 @@ app.py
 Flask REST API — CognitoMail backend.
 
 - ML scoring (Random Forest)
-- Hybrid hard-rule boosts (fixes auth false-negatives)
+- Hybrid hard-rule boosts (explicit auth fail only; "none" ≠ fail)
 - VirusTotal on sender domain + domains found in email links
 - Rich feature details for the extension UI
 
@@ -83,12 +83,12 @@ def domains_from_urls(urls: list) -> list:
             if not host or "." not in host or host in seen:
                 continue
             if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
-                continue  # skip pure IPs for domain endpoint
+                continue
             seen.add(host)
             found.append(host)
         except Exception:
             continue
-    return found[:5]  # free-tier friendly
+    return found[:5]
 
 
 def virustotal_domain_report(domain: str) -> dict:
@@ -185,67 +185,78 @@ def build_details(email: dict, feat_vals: list) -> dict:
 
 # ---------------------------------------------------------------------------
 # Hybrid hard rules
+# "none" = unknown (Gmail often hides auth) → do NOT treat as fail
+# Only explicit "fail" triggers auth boosts
 # ---------------------------------------------------------------------------
 
-def apply_hard_rules(result: dict, feat_vals: list) -> dict:
+def apply_hard_rules(result: dict, feat_vals: list, email: dict = None) -> dict:
     score = int(result.get("risk_score", 0))
     flags = list(result.get("flags") or [])
     boost = 0
+    email = email or {}
 
-    spf_fail = feat_vals[0] == 0
-    dkim_fail = feat_vals[1] == 0
-    dmarc_fail = feat_vals[2] == 0
-    auth_fails = sum([spf_fail, dkim_fail, dmarc_fail])
+    spf = str(email.get("spf", "none")).lower()
+    dkim = str(email.get("dkim", "none")).lower()
+    dmarc = str(email.get("dmarc", "none")).lower()
 
-    if auth_fails >= 3:
-        boost += 30
-        flags.append("All authentication checks failed (SPF + DKIM + DMARC)")
-    elif auth_fails == 2:
-        boost += 22
-        flags.append("Multiple email authentication failures (SPF/DKIM/DMARC)")
-    elif auth_fails == 1:
-        boost += 10
+    spf_fail = spf == "fail"
+    dkim_fail = dkim == "fail"
+    dmarc_fail = dmarc == "fail"
+    explicit_fails = sum([spf_fail, dkim_fail, dmarc_fail])
 
-    brand = feat_vals[15]
-    if brand > 0 and auth_fails >= 1:
-        boost += 20
-        flags.append("Brand impersonation combined with failed authentication")
-    elif brand > 0:
-        boost += 8
-        flags.append("Brand name impersonation detected")
-
-    if feat_vals[14] > 0:
+    if explicit_fails >= 2:
+        boost += 25
+        flags.append("Multiple authentication failures (explicit fail)")
+    elif explicit_fails == 1:
         boost += 12
-        if "Credential-harvesting language detected" not in flags and \
-           "Credential-related words detected" not in flags:
+        flags.append("Email authentication failure detected")
+
+    brand = feat_vals[15] if len(feat_vals) > 15 else 0
+
+    # Brand + explicit auth fail only (not "none")
+    if brand > 0 and explicit_fails >= 1:
+        boost += 15
+        flags.append("Brand impersonation with failed authentication")
+
+    # Credential-harvesting language
+    if len(feat_vals) > 14 and feat_vals[14] > 0:
+        boost += 12
+        if "Credential" not in " ".join(flags):
             flags.append("Credential-harvesting language detected")
 
-    if feat_vals[8] > 0 or feat_vals[12] > 1:
-        boost += 8
+    # Strong urgency only
+    urgency_subj = feat_vals[8] if len(feat_vals) > 8 else 0
+    urgency_body = feat_vals[12] if len(feat_vals) > 12 else 0
+    if urgency_subj >= 2 or urgency_body >= 3:
+        boost += 10
+        flags.append("Strong urgency language")
 
-    if feat_vals[13] > 0:
-        boost += 8
+    # Reward / lottery style
+    if len(feat_vals) > 13 and feat_vals[13] >= 2:
+        boost += 10
 
-    if feat_vals[21]:
-        boost += 15
-        if "URL uses IP address" not in " ".join(flags):
+    # IP-based URL
+    if len(feat_vals) > 21 and feat_vals[21]:
+        boost += 18
+        if "IP address" not in " ".join(flags):
             flags.append("URL uses IP address instead of domain name")
 
-    if feat_vals[23] > 0:
-        boost += 8
-        if "Non-HTTPS" not in " ".join(flags):
-            flags.append("Non-HTTPS links present")
-
-    if feat_vals[22] > 0:
+    # Suspicious TLD
+    if len(feat_vals) > 22 and feat_vals[22] > 0:
         boost += 12
         if "Suspicious top-level domain" not in " ".join(flags):
             flags.append("Suspicious top-level domain in URL")
 
-    if feat_vals[28] > 0:
-        boost += 10
-    if feat_vals[27] > 0:
+    # Several non-HTTPS links
+    if len(feat_vals) > 23 and feat_vals[23] >= 2:
         boost += 8
-    if feat_vals[29] > 0:
+
+    # Hidden / form / redirect tricks
+    if len(feat_vals) > 28 and feat_vals[28] > 0:
+        boost += 10
+    if len(feat_vals) > 27 and feat_vals[27] > 0:
+        boost += 8
+    if len(feat_vals) > 29 and feat_vals[29] > 0:
         boost += 8
 
     new_score = min(100, score + boost)
@@ -286,31 +297,69 @@ def rule_based_score(email: dict) -> dict:
     score, flags = 0, []
     feats = extract_features(email)
 
-    if feats[0] == 0: score += 15; flags.append("SPF check failed or missing")
-    if feats[1] == 0: score += 15; flags.append("DKIM check failed or missing")
-    if feats[2] == 0: score += 10; flags.append("DMARC check failed or missing")
-    if feats[8] > 0:  score += 10; flags.append(f"Urgency words in subject ({int(feats[8])})")
-    if feats[12] > 1: score += 10; flags.append(f"Multiple urgency words in body ({int(feats[12])})")
-    if feats[14] > 0: score += 15; flags.append("Credential-related words detected")
-    if feats[15] > 0: score += 10; flags.append(f"Known brand name in email ({int(feats[15])})")
-    if feats[21] == 1: score += 20; flags.append("URL contains an IP address instead of a domain")
-    if feats[22] > 0: score += 15; flags.append(f"Suspicious top-level domain ({int(feats[22])})")
-    if feats[23] > 0: score += 10; flags.append(f"Non-HTTPS URLs found ({int(feats[23])})")
-    if feats[27] > 0: score += 10; flags.append("HTML form elements detected")
-    if feats[28] > 0: score += 15; flags.append("Hidden text elements detected")
-    if feats[29] > 0: score += 10; flags.append("Redirect links detected")
+    spf = str(email.get("spf", "none")).lower()
+    dkim = str(email.get("dkim", "none")).lower()
+    dmarc = str(email.get("dmarc", "none")).lower()
+
+    if spf == "fail":
+        score += 15
+        flags.append("SPF authentication failed")
+    if dkim == "fail":
+        score += 15
+        flags.append("DKIM authentication failed")
+    if dmarc == "fail":
+        score += 10
+        flags.append("DMARC authentication failed")
+
+    if feats[8] > 0:
+        score += 10
+        flags.append(f"Urgency words in subject ({int(feats[8])})")
+    if feats[12] > 1:
+        score += 10
+        flags.append(f"Multiple urgency words in body ({int(feats[12])})")
+    if feats[14] > 0:
+        score += 15
+        flags.append("Credential-related words detected")
+    if feats[15] > 0:
+        score += 8
+        flags.append(f"Known brand name in email ({int(feats[15])})")
+    if feats[21] == 1:
+        score += 20
+        flags.append("URL contains an IP address instead of a domain")
+    if feats[22] > 0:
+        score += 15
+        flags.append(f"Suspicious top-level domain ({int(feats[22])})")
+    if feats[23] > 0:
+        score += 8
+        flags.append(f"Non-HTTPS URLs found ({int(feats[23])})")
+    if feats[27] > 0:
+        score += 10
+        flags.append("HTML form elements detected")
+    if feats[28] > 0:
+        score += 15
+        flags.append("Hidden text elements detected")
+    if feats[29] > 0:
+        score += 10
+        flags.append("Redirect links detected")
 
     score = min(score, 100)
-    if score >= 70:   verdict, colour = "Phishing", "red"
-    elif score >= 40: verdict, colour = "Suspicious", "orange"
-    else:             verdict, colour = "Likely Safe", "green"
+    if score >= 70:
+        verdict, colour = "Phishing", "red"
+    elif score >= 40:
+        verdict, colour = "Suspicious", "orange"
+    else:
+        verdict, colour = "Likely Safe", "green"
 
     result = {
-        "verdict": verdict, "risk_score": score, "colour": colour,
-        "flags": flags, "method": "rule-based", "confidence": None,
+        "verdict": verdict,
+        "risk_score": score,
+        "colour": colour,
+        "flags": flags,
+        "method": "rule-based",
+        "confidence": None,
         "details": build_details(email, feats),
     }
-    return apply_hard_rules(result, feats)
+    return apply_hard_rules(result, feats, email)
 
 
 def ml_score(email: dict) -> dict:
@@ -319,37 +368,59 @@ def ml_score(email: dict) -> dict:
     phish_prob = float(proba[1])
     risk_score = int(phish_prob * 100)
 
-    if phish_prob >= 0.75:   verdict, colour = "Phishing", "red"
-    elif phish_prob >= 0.45: verdict, colour = "Suspicious", "orange"
-    else:                    verdict, colour = "Likely Safe", "green"
+    if phish_prob >= 0.75:
+        verdict, colour = "Phishing", "red"
+    elif phish_prob >= 0.45:
+        verdict, colour = "Suspicious", "orange"
+    else:
+        verdict, colour = "Likely Safe", "green"
 
     feat_vals = feats[0]
     flags = []
-    if feat_vals[0] == 0: flags.append("SPF authentication failed")
-    if feat_vals[1] == 0: flags.append("DKIM authentication failed")
-    if feat_vals[2] == 0: flags.append("DMARC authentication failed")
-    if feat_vals[8] > 0:  flags.append("Urgency words in subject")
-    if feat_vals[12] > 1: flags.append("Multiple urgency words in body")
-    if feat_vals[14] > 0: flags.append("Credential-harvesting language detected")
-    if feat_vals[15] > 0: flags.append("Brand name impersonation detected")
-    if feat_vals[21]:     flags.append("URL uses IP address instead of domain name")
-    if feat_vals[22] > 0: flags.append("Suspicious top-level domain in URL")
-    if feat_vals[23] > 0: flags.append("Non-HTTPS links present")
-    if feat_vals[28] > 0: flags.append("Hidden content elements in email")
-    if feat_vals[29] > 0: flags.append("Redirect links detected")
+
+    # Auth flags only on explicit fail (not "none")
+    if str(email.get("spf", "none")).lower() == "fail":
+        flags.append("SPF authentication failed")
+    if str(email.get("dkim", "none")).lower() == "fail":
+        flags.append("DKIM authentication failed")
+    if str(email.get("dmarc", "none")).lower() == "fail":
+        flags.append("DMARC authentication failed")
+
+    if feat_vals[8] > 0:
+        flags.append("Urgency words in subject")
+    if feat_vals[12] > 1:
+        flags.append("Multiple urgency words in body")
+    if feat_vals[14] > 0:
+        flags.append("Credential-harvesting language detected")
+    if feat_vals[15] > 0:
+        flags.append("Brand name present in email")
+    if feat_vals[21]:
+        flags.append("URL uses IP address instead of domain name")
+    if feat_vals[22] > 0:
+        flags.append("Suspicious top-level domain in URL")
+    if feat_vals[23] > 0:
+        flags.append("Non-HTTPS links present")
+    if feat_vals[28] > 0:
+        flags.append("Hidden content elements in email")
+    if feat_vals[29] > 0:
+        flags.append("Redirect links detected")
+
     if not flags:
-        flags.append(
-            "No significant phishing signals detected"
-            if phish_prob < 0.45
-            else "Combination of low-level signals raised suspicion"
-        )
+        if phish_prob < 0.45:
+            flags.append("No significant phishing signals detected")
+        else:
+            flags.append("Combination of low-level signals raised suspicion")
 
     result = {
-        "verdict": verdict, "risk_score": risk_score, "colour": colour,
-        "flags": flags, "method": "ml", "confidence": round(phish_prob, 4),
+        "verdict": verdict,
+        "risk_score": risk_score,
+        "colour": colour,
+        "flags": flags,
+        "method": "ml",
+        "confidence": round(phish_prob, 4),
         "details": build_details(email, feat_vals.tolist()),
     }
-    return apply_hard_rules(result, feat_vals.tolist())
+    return apply_hard_rules(result, feat_vals.tolist(), email)
 
 
 # ---------------------------------------------------------------------------
@@ -384,19 +455,22 @@ def analyze():
         return jsonify({"error": "Request body must be JSON"}), 400
 
     email_dict = {
-        "sender":  str(data.get("sender", "")),
+        "sender": str(data.get("sender", "")),
         "subject": str(data.get("subject", "")),
-        "body":    str(data.get("body", "")),
-        "urls":    data.get("urls", []),
-        "spf":     str(data.get("spf", "none")),
-        "dkim":    str(data.get("dkim", "none")),
-        "dmarc":   str(data.get("dmarc", "none")),
+        "body": str(data.get("body", "")),
+        "urls": data.get("urls", []),
+        "spf": str(data.get("spf", "none")),
+        "dkim": str(data.get("dkim", "none")),
+        "dmarc": str(data.get("dmarc", "none")),
     }
     if not isinstance(email_dict["urls"], list):
         email_dict["urls"] = []
 
     try:
-        result = ml_score(email_dict) if pipeline is not None else rule_based_score(email_dict)
+        if pipeline is not None:
+            result = ml_score(email_dict)
+        else:
+            result = rule_based_score(email_dict)
     except Exception as e:
         log.error(f"Analysis error: {e}")
         return jsonify({"error": "Analysis failed", "detail": str(e)}), 500
@@ -421,15 +495,22 @@ def analyze():
         if mal >= 3:
             extra = min(25, mal * 3)
             result["risk_score"] = min(100, result["risk_score"] + extra)
-            result["flags"].append(f"VirusTotal: {mal} engines flagged {worst} as malicious")
+            result["flags"].append(
+                f"VirusTotal: {mal} engines flagged {worst} as malicious"
+            )
             result["rule_boost"] = result.get("rule_boost", 0) + extra
         elif sus >= 5:
-            result["flags"].append(f"VirusTotal: {sus} engines marked {worst} as suspicious")
+            result["flags"].append(
+                f"VirusTotal: {sus} engines marked {worst} as suspicious"
+            )
 
         s = result["risk_score"]
-        if s >= 70:   result["verdict"], result["colour"] = "Phishing", "red"
-        elif s >= 40: result["verdict"], result["colour"] = "Suspicious", "orange"
-        else:         result["verdict"], result["colour"] = "Likely Safe", "green"
+        if s >= 70:
+            result["verdict"], result["colour"] = "Phishing", "red"
+        elif s >= 40:
+            result["verdict"], result["colour"] = "Suspicious", "orange"
+        else:
+            result["verdict"], result["colour"] = "Likely Safe", "green"
 
     log.info(
         f"Analyzed | verdict={result['verdict']} score={result['risk_score']} "
