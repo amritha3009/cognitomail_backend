@@ -1,7 +1,12 @@
 """
 app.py
 ------
-Flask REST API — bridge between the browser extension and the ML model.
+Flask REST API — CognitoMail backend.
+
+- ML scoring (Random Forest)
+- Hybrid hard-rule boosts (fixes auth false-negatives)
+- VirusTotal on sender domain + domains found in email links
+- Rich feature details for the extension UI
 
 Endpoints:
     POST /analyze
@@ -9,7 +14,7 @@ Endpoints:
     GET  /model-info
     POST /feedback
 
-Environment variables (Render):
+Env (Render):
     VT_API_KEY
     PORT
 """
@@ -21,6 +26,7 @@ import logging
 import joblib
 import numpy as np
 import requests
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -32,10 +38,6 @@ log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 
 VT_API_KEY = os.environ.get("VT_API_KEY", "").strip()
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
@@ -51,9 +53,8 @@ def load_model():
         log.info(f"Model loaded from {MODEL_PATH}")
     else:
         log.warning(
-            "No trained model found at models/phishing_model.pkl. "
-            "Run 'python src/train_model.py' first. "
-            "API will use rule-based fallback until model is ready."
+            "No trained model at models/phishing_model.pkl. "
+            "Run train_model.py first. Using rule-based fallback."
         )
 
 
@@ -61,7 +62,7 @@ load_model()
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Domain / VirusTotal helpers
 # ---------------------------------------------------------------------------
 
 def get_sender_domain(sender: str) -> str:
@@ -69,16 +70,36 @@ def get_sender_domain(sender: str) -> str:
     return m.group(1).lower() if m else ""
 
 
+def domains_from_urls(urls: list) -> list:
+    found, seen = [], set()
+    for raw in urls or []:
+        try:
+            u = (raw or "").strip()
+            if not u:
+                continue
+            if "://" not in u:
+                u = "http://" + u
+            host = (urlparse(u).hostname or "").lower().lstrip(".")
+            if not host or "." not in host or host in seen:
+                continue
+            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
+                continue  # skip pure IPs for domain endpoint
+            seen.add(host)
+            found.append(host)
+        except Exception:
+            continue
+    return found[:5]  # free-tier friendly
+
+
 def virustotal_domain_report(domain: str) -> dict:
     if not domain:
-        return {"available": False, "reason": "no_domain"}
+        return {"available": False, "reason": "no_domain", "domain": domain or ""}
     if not VT_API_KEY:
-        return {"available": False, "reason": "no_api_key"}
+        return {"available": False, "reason": "no_api_key", "domain": domain}
 
     try:
         url = f"https://www.virustotal.com/api/v3/domains/{domain}"
-        headers = {"x-apikey": VT_API_KEY}
-        r = requests.get(url, headers=headers, timeout=8)
+        r = requests.get(url, headers={"x-apikey": VT_API_KEY}, timeout=8)
 
         if r.status_code == 404:
             return {"available": False, "reason": "domain_not_found", "domain": domain}
@@ -105,13 +126,37 @@ def virustotal_domain_report(domain: str) -> dict:
             "malicious_ratio": round(malicious / total, 3),
             "reputation": attrs.get("reputation", 0),
             "categories": attrs.get("categories", {}) or {},
-            "last_analysis_date": attrs.get("last_analysis_date"),
         }
     except requests.Timeout:
         return {"available": False, "reason": "timeout", "domain": domain}
     except Exception as e:
         log.warning(f"VirusTotal error for {domain}: {e}")
         return {"available": False, "reason": str(e), "domain": domain}
+
+
+def virustotal_multi(domains: list) -> dict:
+    reports = []
+    max_malicious = 0
+    max_suspicious = 0
+    worst_domain = None
+
+    for d in domains:
+        rep = virustotal_domain_report(d)
+        reports.append(rep)
+        if rep.get("available"):
+            m = rep.get("malicious", 0)
+            s = rep.get("suspicious", 0)
+            if m > max_malicious or (m == max_malicious and s > max_suspicious):
+                max_malicious, max_suspicious, worst_domain = m, s, d
+
+    return {
+        "available": any(r.get("available") for r in reports),
+        "queried": domains,
+        "worst_domain": worst_domain,
+        "max_malicious": max_malicious,
+        "max_suspicious": max_suspicious,
+        "reports": reports,
+    }
 
 
 def build_details(email: dict, feat_vals: list) -> dict:
@@ -138,12 +183,11 @@ def build_details(email: dict, feat_vals: list) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Hybrid hard rules
+# ---------------------------------------------------------------------------
+
 def apply_hard_rules(result: dict, feat_vals: list) -> dict:
-    """
-    Hybrid post-processing: boost ML/rule score when high-confidence
-    phishing signals are present. Fixes false negatives where the
-    Random Forest under-weights SPF/DKIM/DMARC (importance ≈ 0 in training).
-    """
     score = int(result.get("risk_score", 0))
     flags = list(result.get("flags") or [])
     boost = 0
@@ -153,7 +197,6 @@ def apply_hard_rules(result: dict, feat_vals: list) -> dict:
     dmarc_fail = feat_vals[2] == 0
     auth_fails = sum([spf_fail, dkim_fail, dmarc_fail])
 
-    # Multiple authentication failures
     if auth_fails >= 3:
         boost += 30
         flags.append("All authentication checks failed (SPF + DKIM + DMARC)")
@@ -163,7 +206,6 @@ def apply_hard_rules(result: dict, feat_vals: list) -> dict:
     elif auth_fails == 1:
         boost += 10
 
-    # Brand impersonation + any auth failure (classic phishing)
     brand = feat_vals[15]
     if brand > 0 and auth_fails >= 1:
         boost += 20
@@ -172,45 +214,33 @@ def apply_hard_rules(result: dict, feat_vals: list) -> dict:
         boost += 8
         flags.append("Brand name impersonation detected")
 
-    # Credential-harvesting language
     if feat_vals[14] > 0:
         boost += 12
         if "Credential-harvesting language detected" not in flags and \
            "Credential-related words detected" not in flags:
             flags.append("Credential-harvesting language detected")
 
-    # Urgency
     if feat_vals[8] > 0 or feat_vals[12] > 1:
         boost += 8
-        if "Urgency words in subject" not in " ".join(flags) and \
-           "Multiple urgency words in body" not in " ".join(flags):
-            flags.append("Urgency language detected")
 
-    # Reward / lottery language
     if feat_vals[13] > 0:
         boost += 8
 
-    # IP-based URL
     if feat_vals[21]:
         boost += 15
-        if "URL uses IP address instead of domain name" not in flags and \
-           "URL contains an IP address instead of a domain" not in flags:
+        if "URL uses IP address" not in " ".join(flags):
             flags.append("URL uses IP address instead of domain name")
 
-    # Non-HTTPS links
     if feat_vals[23] > 0:
         boost += 8
-        if "Non-HTTPS links present" not in flags and \
-           "Non-HTTPS URLs found" not in " ".join(flags):
+        if "Non-HTTPS" not in " ".join(flags):
             flags.append("Non-HTTPS links present")
 
-    # Suspicious TLD
     if feat_vals[22] > 0:
         boost += 12
         if "Suspicious top-level domain" not in " ".join(flags):
             flags.append("Suspicious top-level domain in URL")
 
-    # Hidden content / forms / redirects
     if feat_vals[28] > 0:
         boost += 10
     if feat_vals[27] > 0:
@@ -227,9 +257,7 @@ def apply_hard_rules(result: dict, feat_vals: list) -> dict:
     else:
         verdict, colour = "Likely Safe", "green"
 
-    # Deduplicate flags
-    seen = set()
-    unique_flags = []
+    seen, unique_flags = set(), []
     for f in flags:
         if f not in seen:
             seen.add(f)
@@ -239,88 +267,51 @@ def apply_hard_rules(result: dict, feat_vals: list) -> dict:
     if boost > 0 and "+rules" not in method:
         method = f"{method}+rules"
 
-    result["risk_score"] = new_score
-    result["verdict"] = verdict
-    result["colour"] = colour
-    result["flags"] = unique_flags
-    result["method"] = method
-    result["rule_boost"] = boost
+    result.update({
+        "risk_score": new_score,
+        "verdict": verdict,
+        "colour": colour,
+        "flags": unique_flags,
+        "method": method,
+        "rule_boost": boost,
+    })
     return result
 
 
 # ---------------------------------------------------------------------------
-# Rule-based fallback
+# Scoring
 # ---------------------------------------------------------------------------
 
 def rule_based_score(email: dict) -> dict:
-    score = 0
-    flags = []
+    score, flags = 0, []
     feats = extract_features(email)
 
-    if feats[0] == 0:
-        score += 15
-        flags.append("SPF check failed or missing")
-    if feats[1] == 0:
-        score += 15
-        flags.append("DKIM check failed or missing")
-    if feats[2] == 0:
-        score += 10
-        flags.append("DMARC check failed or missing")
-    if feats[8] > 0:
-        score += 10
-        flags.append(f"Urgency words in subject ({int(feats[8])})")
-    if feats[12] > 1:
-        score += 10
-        flags.append(f"Multiple urgency words in body ({int(feats[12])})")
-    if feats[14] > 0:
-        score += 15
-        flags.append("Credential-related words detected")
-    if feats[15] > 0:
-        score += 10
-        flags.append(f"Known brand name in email ({int(feats[15])})")
-    if feats[21] == 1:
-        score += 20
-        flags.append("URL contains an IP address instead of a domain")
-    if feats[22] > 0:
-        score += 15
-        flags.append(f"Suspicious top-level domain ({int(feats[22])})")
-    if feats[23] > 0:
-        score += 10
-        flags.append(f"Non-HTTPS URLs found ({int(feats[23])})")
-    if feats[27] > 0:
-        score += 10
-        flags.append("HTML form elements detected")
-    if feats[28] > 0:
-        score += 15
-        flags.append("Hidden text elements detected")
-    if feats[29] > 0:
-        score += 10
-        flags.append("Redirect links detected")
+    if feats[0] == 0: score += 15; flags.append("SPF check failed or missing")
+    if feats[1] == 0: score += 15; flags.append("DKIM check failed or missing")
+    if feats[2] == 0: score += 10; flags.append("DMARC check failed or missing")
+    if feats[8] > 0:  score += 10; flags.append(f"Urgency words in subject ({int(feats[8])})")
+    if feats[12] > 1: score += 10; flags.append(f"Multiple urgency words in body ({int(feats[12])})")
+    if feats[14] > 0: score += 15; flags.append("Credential-related words detected")
+    if feats[15] > 0: score += 10; flags.append(f"Known brand name in email ({int(feats[15])})")
+    if feats[21] == 1: score += 20; flags.append("URL contains an IP address instead of a domain")
+    if feats[22] > 0: score += 15; flags.append(f"Suspicious top-level domain ({int(feats[22])})")
+    if feats[23] > 0: score += 10; flags.append(f"Non-HTTPS URLs found ({int(feats[23])})")
+    if feats[27] > 0: score += 10; flags.append("HTML form elements detected")
+    if feats[28] > 0: score += 15; flags.append("Hidden text elements detected")
+    if feats[29] > 0: score += 10; flags.append("Redirect links detected")
 
     score = min(score, 100)
-
-    if score >= 70:
-        verdict, colour = "Phishing", "red"
-    elif score >= 40:
-        verdict, colour = "Suspicious", "orange"
-    else:
-        verdict, colour = "Likely Safe", "green"
+    if score >= 70:   verdict, colour = "Phishing", "red"
+    elif score >= 40: verdict, colour = "Suspicious", "orange"
+    else:             verdict, colour = "Likely Safe", "green"
 
     result = {
-        "verdict": verdict,
-        "risk_score": score,
-        "colour": colour,
-        "flags": flags,
-        "method": "rule-based",
-        "confidence": None,
+        "verdict": verdict, "risk_score": score, "colour": colour,
+        "flags": flags, "method": "rule-based", "confidence": None,
         "details": build_details(email, feats),
     }
     return apply_hard_rules(result, feats)
 
-
-# ---------------------------------------------------------------------------
-# ML-based analysis
-# ---------------------------------------------------------------------------
 
 def ml_score(email: dict) -> dict:
     feats = np.array([extract_features(email)], dtype=np.float32)
@@ -328,61 +319,41 @@ def ml_score(email: dict) -> dict:
     phish_prob = float(proba[1])
     risk_score = int(phish_prob * 100)
 
-    if phish_prob >= 0.75:
-        verdict, colour = "Phishing", "red"
-    elif phish_prob >= 0.45:
-        verdict, colour = "Suspicious", "orange"
-    else:
-        verdict, colour = "Likely Safe", "green"
+    if phish_prob >= 0.75:   verdict, colour = "Phishing", "red"
+    elif phish_prob >= 0.45: verdict, colour = "Suspicious", "orange"
+    else:                    verdict, colour = "Likely Safe", "green"
 
     feat_vals = feats[0]
     flags = []
-
-    if feat_vals[0] == 0:
-        flags.append("SPF authentication failed")
-    if feat_vals[1] == 0:
-        flags.append("DKIM authentication failed")
-    if feat_vals[2] == 0:
-        flags.append("DMARC authentication failed")
-    if feat_vals[8] > 0:
-        flags.append("Urgency words in subject")
-    if feat_vals[12] > 1:
-        flags.append("Multiple urgency words in body")
-    if feat_vals[14] > 0:
-        flags.append("Credential-harvesting language detected")
-    if feat_vals[15] > 0:
-        flags.append("Brand name impersonation detected")
-    if feat_vals[21]:
-        flags.append("URL uses IP address instead of domain name")
-    if feat_vals[22] > 0:
-        flags.append("Suspicious top-level domain in URL")
-    if feat_vals[23] > 0:
-        flags.append("Non-HTTPS links present")
-    if feat_vals[28] > 0:
-        flags.append("Hidden content elements in email")
-    if feat_vals[29] > 0:
-        flags.append("Redirect links detected")
-
+    if feat_vals[0] == 0: flags.append("SPF authentication failed")
+    if feat_vals[1] == 0: flags.append("DKIM authentication failed")
+    if feat_vals[2] == 0: flags.append("DMARC authentication failed")
+    if feat_vals[8] > 0:  flags.append("Urgency words in subject")
+    if feat_vals[12] > 1: flags.append("Multiple urgency words in body")
+    if feat_vals[14] > 0: flags.append("Credential-harvesting language detected")
+    if feat_vals[15] > 0: flags.append("Brand name impersonation detected")
+    if feat_vals[21]:     flags.append("URL uses IP address instead of domain name")
+    if feat_vals[22] > 0: flags.append("Suspicious top-level domain in URL")
+    if feat_vals[23] > 0: flags.append("Non-HTTPS links present")
+    if feat_vals[28] > 0: flags.append("Hidden content elements in email")
+    if feat_vals[29] > 0: flags.append("Redirect links detected")
     if not flags:
-        if phish_prob < 0.45:
-            flags.append("No significant phishing signals detected")
-        else:
-            flags.append("Combination of low-level signals raised suspicion")
+        flags.append(
+            "No significant phishing signals detected"
+            if phish_prob < 0.45
+            else "Combination of low-level signals raised suspicion"
+        )
 
     result = {
-        "verdict": verdict,
-        "risk_score": risk_score,
-        "colour": colour,
-        "flags": flags,
-        "method": "ml",
-        "confidence": round(phish_prob, 4),
+        "verdict": verdict, "risk_score": risk_score, "colour": colour,
+        "flags": flags, "method": "ml", "confidence": round(phish_prob, 4),
         "details": build_details(email, feat_vals.tolist()),
     }
     return apply_hard_rules(result, feat_vals.tolist())
 
 
 # ---------------------------------------------------------------------------
-# API routes
+# Routes
 # ---------------------------------------------------------------------------
 
 @app.route("/health", methods=["GET"])
@@ -397,8 +368,7 @@ def health():
 @app.route("/model-info", methods=["GET"])
 def model_info():
     if pipeline is None:
-        return jsonify({"error": "No model loaded. Run train_model.py first."}), 503
-
+        return jsonify({"error": "No model loaded"}), 503
     clf = pipeline.named_steps["clf"]
     return jsonify({
         "model_type": type(clf).__name__,
@@ -426,44 +396,45 @@ def analyze():
         email_dict["urls"] = []
 
     try:
-        if pipeline is not None:
-            result = ml_score(email_dict)
-        else:
-            result = rule_based_score(email_dict)
+        result = ml_score(email_dict) if pipeline is not None else rule_based_score(email_dict)
     except Exception as e:
         log.error(f"Analysis error: {e}")
         return jsonify({"error": "Analysis failed", "detail": str(e)}), 500
 
-    # VirusTotal domain lookup
-    domain = get_sender_domain(email_dict["sender"])
-    vt = virustotal_domain_report(domain)
-    result["sender_domain"] = domain
-    result["virustotal"] = vt
+    # VirusTotal: sender + link domains
+    sender_domain = get_sender_domain(email_dict["sender"])
+    link_domains = domains_from_urls(email_dict["urls"])
+    domains_to_check = []
+    for d in [sender_domain] + link_domains:
+        if d and d not in domains_to_check:
+            domains_to_check.append(d)
 
-    # Extra boost from VirusTotal
-    if vt.get("available") and vt.get("malicious", 0) >= 3:
-        extra = min(20, vt["malicious"] * 3)
-        result["risk_score"] = min(100, result["risk_score"] + extra)
-        result["flags"].append(
-            f"VirusTotal: {vt['malicious']} engines flagged domain as malicious"
-        )
-        result["rule_boost"] = result.get("rule_boost", 0) + extra
+    vt_multi = virustotal_multi(domains_to_check)
+    result["sender_domain"] = sender_domain
+    result["link_domains"] = link_domains
+    result["virustotal"] = vt_multi
+
+    if vt_multi.get("available"):
+        mal = vt_multi.get("max_malicious", 0)
+        sus = vt_multi.get("max_suspicious", 0)
+        worst = vt_multi.get("worst_domain")
+        if mal >= 3:
+            extra = min(25, mal * 3)
+            result["risk_score"] = min(100, result["risk_score"] + extra)
+            result["flags"].append(f"VirusTotal: {mal} engines flagged {worst} as malicious")
+            result["rule_boost"] = result.get("rule_boost", 0) + extra
+        elif sus >= 5:
+            result["flags"].append(f"VirusTotal: {sus} engines marked {worst} as suspicious")
+
         s = result["risk_score"]
-        if s >= 70:
-            result["verdict"], result["colour"] = "Phishing", "red"
-        elif s >= 40:
-            result["verdict"], result["colour"] = "Suspicious", "orange"
-        else:
-            result["verdict"], result["colour"] = "Likely Safe", "green"
-    elif vt.get("available") and vt.get("suspicious", 0) >= 5:
-        result["flags"].append(
-            f"VirusTotal: {vt['suspicious']} engines marked domain as suspicious"
-        )
+        if s >= 70:   result["verdict"], result["colour"] = "Phishing", "red"
+        elif s >= 40: result["verdict"], result["colour"] = "Suspicious", "orange"
+        else:         result["verdict"], result["colour"] = "Likely Safe", "green"
 
     log.info(
         f"Analyzed | verdict={result['verdict']} score={result['risk_score']} "
         f"boost={result.get('rule_boost', 0)} method={result['method']} "
-        f"domain={domain} vt={vt.get('available')}"
+        f"domains={domains_to_check}"
     )
     return jsonify(result)
 
@@ -477,26 +448,17 @@ def feedback():
     email_dict = data.get("email", {})
     predicted_label = int(data.get("predicted_label", -1))
     correct_label = int(data.get("correct_label", -1))
-
     if predicted_label not in (0, 1) or correct_label not in (0, 1):
         return jsonify({"error": "predicted_label and correct_label must be 0 or 1"}), 400
 
     try:
         from train_model import log_feedback
         log_feedback(email_dict, predicted_label, correct_label)
-        log.info(f"Feedback logged: predicted={predicted_label} correct={correct_label}")
-        return jsonify({
-            "status": "logged",
-            "message": "Thank you — this will improve future detection.",
-        })
+        return jsonify({"status": "logged", "message": "Thank you."})
     except Exception as e:
-        log.error(f"Feedback logging error: {e}")
+        log.error(f"Feedback error: {e}")
         return jsonify({"error": "Failed to log feedback"}), 500
 
-
-# ---------------------------------------------------------------------------
-# Dev server
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))

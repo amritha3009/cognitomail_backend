@@ -1,5 +1,5 @@
-// content.js — CognitoMail v1.2
-// Robust Gmail + Outlook detection + VirusTotal + detailed signals
+// content.js — CognitoMail v1.3
+// Gmail + Outlook detection | detailed panel | VirusTotal | side risk badge
 console.log("[CognitoMail] content script loaded —", location.href);
 
 (function () {
@@ -23,6 +23,13 @@ console.log("[CognitoMail] content script loaded —", location.href);
   }
   function text(el) {
     return el ? (el.innerText || el.textContent || "").trim() : "";
+  }
+  function escapeHtml(str) {
+    return String(str || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
   // ── Observer ───────────────────────────────────────────────────────────────
@@ -48,6 +55,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
     lastEmailSignature = null;
     isAnalysing = false;
     removePanel();
+    removeSideBadge();
     setTimeout(onDomSettled, 400);
   });
 
@@ -75,6 +83,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
       lastEmailSignature = null;
       isAnalysing = false;
       removePanel();
+      removeSideBadge();
       try { chrome.runtime.sendMessage({ type: "CLEAR_RESULT" }); } catch (_) {}
     }
 
@@ -84,7 +93,9 @@ console.log("[CognitoMail] content script loaded —", location.href);
       return;
     }
 
-    const sig = (emailData.subject + "||" + emailData.sender + "||" + emailData.body.slice(0, 80)).toLowerCase();
+    const sig = (
+      emailData.subject + "||" + emailData.sender + "||" + emailData.body.slice(0, 80)
+    ).toLowerCase();
     if (sig === lastEmailSignature) return;
 
     lastEmailSignature = sig;
@@ -103,7 +114,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
     return null;
   }
 
-  // ── Gmail extraction ───────────────────────────────────────────────────────
+  // ── Gmail ──────────────────────────────────────────────────────────────────
 
   function extractGmail() {
     const isConversation =
@@ -143,7 +154,9 @@ console.log("[CognitoMail] content script loaded —", location.href);
       qs('[role="main"] .adP.adO');
 
     if (!bodyEl) {
-      const candidates = qsa('[role="main"] div[dir="ltr"], [role="main"] div[dir="auto"], [role="main"] .ii');
+      const candidates = qsa(
+        '[role="main"] div[dir="ltr"], [role="main"] div[dir="auto"], [role="main"] .ii'
+      );
       let best = null, bestLen = 0;
       for (const el of candidates) {
         const t = text(el);
@@ -181,7 +194,9 @@ console.log("[CognitoMail] content script loaded —", location.href);
     }
 
     if (!sender || sender === "unknown") {
-      const spans = qsa('[role="main"] span[email], [role="main"] a[email], [role="main"] span[data-hovercard-id]');
+      const spans = qsa(
+        '[role="main"] span[email], [role="main"] a[email], [role="main"] span[data-hovercard-id]'
+      );
       for (const s of spans) {
         const e = s.getAttribute("email") || s.getAttribute("data-hovercard-id");
         if (e && e.includes("@")) {
@@ -191,7 +206,17 @@ console.log("[CognitoMail] content script loaded —", location.href);
       }
     }
 
-    console.debug("[CognitoMail] Gmail extracted:", { subject: subject.slice(0, 40), sender, bodyLen: body.length });
+    // Parse "Name <email@domain>" if needed
+    if (sender && sender.includes("<") && sender.includes("@")) {
+      const m = sender.match(/<([^>]+@[^>]+)>/);
+      if (m) sender = m[1].trim();
+    }
+
+    console.debug("[CognitoMail] Gmail extracted:", {
+      subject: subject.slice(0, 40),
+      sender,
+      bodyLen: body.length,
+    });
 
     return {
       sender: sender || "unknown",
@@ -204,7 +229,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
     };
   }
 
-  // ── Outlook extraction ─────────────────────────────────────────────────────
+  // ── Outlook ────────────────────────────────────────────────────────────────
 
   function extractOutlook() {
     const subjectEl =
@@ -213,7 +238,6 @@ console.log("[CognitoMail] content script loaded —", location.href);
       qs(".allowTextSelection") ||
       qs('[role="heading"][aria-level="1"]') ||
       qs("div[data-automationid='Subject']") ||
-      qs(".rps_b1e8") ||
       qs('[class*="Subject"]');
 
     const senderEl =
@@ -229,14 +253,11 @@ console.log("[CognitoMail] content script loaded —", location.href);
       qs('[aria-label="Message body"]') ||
       qs(".Wr[role='document']") ||
       qs('[role="document"]') ||
-      qs(".rps_1f8f") ||
       qs("div[class*='UniqueMessageBody']") ||
       qs("div[class*='MessageBody']");
 
     if (!subjectEl || !bodyEl) {
-      console.debug("[CognitoMail] Outlook: missing subject or body", {
-        subject: !!subjectEl, body: !!bodyEl, sender: !!senderEl,
-      });
+      console.debug("[CognitoMail] Outlook: missing subject or body");
       return null;
     }
 
@@ -250,8 +271,10 @@ console.log("[CognitoMail] content script loaded —", location.href);
       const m = title.match(/[\w.+-]+@[\w.-]+\.\w+/);
       if (m) sender = m[0];
     }
-
-    console.debug("[CognitoMail] Outlook extracted:", { subject: subject.slice(0, 40), sender, bodyLen: body.length });
+    if (sender.includes("<") && sender.includes("@")) {
+      const m = sender.match(/<([^>]+@[^>]+)>/);
+      if (m) sender = m[1].trim();
+    }
 
     return {
       sender,
@@ -263,8 +286,6 @@ console.log("[CognitoMail] content script loaded —", location.href);
       dmarc: "none",
     };
   }
-
-  // ── Auth helpers (Gmail) ───────────────────────────────────────────────────
 
   function extractAuth(protocol) {
     const detailSpans = qsa(".aZy, .ajz, [data-tooltip], .ajT");
@@ -283,20 +304,24 @@ console.log("[CognitoMail] content script loaded —", location.href);
     return [...new Set(matches)].slice(0, 20);
   }
 
-  // ── Analysis pipeline ──────────────────────────────────────────────────────
+  // ── Analysis ───────────────────────────────────────────────────────────────
 
   function triggerAnalysis(emailData) {
     isAnalysing = true;
-    safeInject(() => injectLoadingPanel());
+    safeInject(() => {
+      injectLoadingPanel();
+      injectSideBadgeLoading();
+    });
 
     const safetyRelease = setTimeout(() => {
       if (isAnalysing) {
         isAnalysing = false;
-        safeInject(() =>
-          injectErrorPanel("CognitoMail: request timed out. Is the Render service awake?")
-        );
+        safeInject(() => {
+          injectErrorPanel("CognitoMail: request timed out. Is the Render service awake?");
+          removeSideBadge();
+        });
       }
-    }, 18000);
+    }, 20000);
 
     try {
       chrome.runtime.sendMessage({ type: "ANALYZE_EMAIL", email: emailData }, (response) => {
@@ -304,15 +329,17 @@ console.log("[CognitoMail] content script loaded —", location.href);
         isAnalysing = false;
 
         if (chrome.runtime.lastError) {
-          safeInject(() =>
-            injectErrorPanel("CognitoMail: background not responding. Reload the tab.")
-          );
+          safeInject(() => {
+            injectErrorPanel("CognitoMail: background not responding. Reload the tab.");
+            removeSideBadge();
+          });
           return;
         }
         if (!response || !response.ok) {
-          safeInject(() =>
-            injectErrorPanel(response?.error || "CognitoMail: backend unreachable. Check Render.")
-          );
+          safeInject(() => {
+            injectErrorPanel(response?.error || "CognitoMail: backend unreachable. Check Render.");
+            removeSideBadge();
+          });
           return;
         }
         safeInject(() => injectResultPanel(response.result, emailData));
@@ -341,6 +368,11 @@ console.log("[CognitoMail] content script loaded —", location.href);
     if (old) old.remove();
   }
 
+  function removeSideBadge() {
+    const b = document.getElementById("cognitomail-side-badge");
+    if (b) b.remove();
+  }
+
   // ── Panel placement ────────────────────────────────────────────────────────
 
   function getPanelContainer() {
@@ -349,7 +381,8 @@ console.log("[CognitoMail] content script loaded —", location.href);
 
     c = document.createElement("div");
     c.id = "cognitomail-panel-container";
-    c.style.cssText = "margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;z-index:9999;";
+    c.style.cssText =
+      "margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;z-index:9999;";
 
     const gmailBody =
       qs(".a3s.aiL") ||
@@ -375,7 +408,40 @@ console.log("[CognitoMail] content script loaded —", location.href);
     return c;
   }
 
-  // ── UI panels ──────────────────────────────────────────────────────────────
+  // ── Side badge ─────────────────────────────────────────────────────────────
+
+  function injectSideBadgeLoading() {
+    removeSideBadge();
+    const badge = document.createElement("div");
+    badge.id = "cognitomail-side-badge";
+    badge.className = "cgm-side-loading";
+    badge.innerHTML = `
+      <div class="cgm-side-spinner"></div>
+      <div class="cgm-side-label">Scanning…</div>
+      <div class="cgm-side-sub">CognitoMail</div>
+    `;
+    document.body.appendChild(badge);
+  }
+
+  function injectSideBadge(data) {
+    removeSideBadge();
+    const score = data.risk_score ?? 0;
+    const colour = score >= 70 ? "#ea4335" : score >= 40 ? "#f9ab00" : "#00c9a7";
+    const label =
+      data.verdict ||
+      (score >= 70 ? "Phishing" : score >= 40 ? "Suspicious" : "Likely Safe");
+
+    const badge = document.createElement("div");
+    badge.id = "cognitomail-side-badge";
+    badge.innerHTML = `
+      <div class="cgm-side-score" style="color:${colour}">${score}</div>
+      <div class="cgm-side-label">${escapeHtml(label)}</div>
+      <div class="cgm-side-sub">CognitoMail</div>
+    `;
+    document.body.appendChild(badge);
+  }
+
+  // ── Loading panel ──────────────────────────────────────────────────────────
 
   function injectLoadingPanel() {
     const c = getPanelContainer();
@@ -393,7 +459,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
         <div class="cgm-body">
           <div class="cgm-scan-row">
             <div class="cgm-spinner"></div>
-            <span>Analysing email — ML model, auth, URLs &amp; VirusTotal…</span>
+            <span>Analysing email — ML, auth, URLs &amp; VirusTotal…</span>
           </div>
           <div class="cgm-skeleton"></div>
           <div class="cgm-skeleton" style="width:70%"></div>
@@ -401,6 +467,8 @@ console.log("[CognitoMail] content script loaded —", location.href);
         </div>
       </div>`;
   }
+
+  // ── Result panel ───────────────────────────────────────────────────────────
 
   function injectResultPanel(data, emailData) {
     const c = getPanelContainer();
@@ -425,33 +493,26 @@ console.log("[CognitoMail] content script loaded —", location.href);
     const vt = data.virustotal || {};
     const domain = data.sender_domain || d.sender_domain || "—";
 
-    // VirusTotal block
+    // VirusTotal block (supports multi-domain shape from new backend)
     let vtHTML = "";
     if (vt.available) {
-      const malColor = vt.malicious > 0 ? "#ea4335" : "#00c9a7";
-      const susColor = vt.suspicious > 0 ? "#f9ab00" : "#9aa0b4";
+      const mal = vt.max_malicious ?? (vt.reports && vt.reports[0] && vt.reports[0].malicious) ?? vt.malicious ?? 0;
+      const sus = vt.max_suspicious ?? (vt.reports && vt.reports[0] && vt.reports[0].suspicious) ?? vt.suspicious ?? 0;
+      const harm = vt.harmless ?? (vt.reports && vt.reports[0] && vt.reports[0].harmless) ?? "—";
+      const rep = vt.reputation ?? (vt.reports && vt.reports[0] && vt.reports[0].reputation) ?? "—";
+      const worst = vt.worst_domain || domain;
+      const queried = (vt.queried || [domain]).join(", ");
+      const malColor = mal > 0 ? "#ea4335" : "#00c9a7";
+      const susColor = sus > 0 ? "#f9ab00" : "#9aa0b4";
+
       vtHTML = `
         <div class="cgm-vt-grid">
-          <div class="cgm-vt-item">
-            <span class="cgm-vt-label">Domain</span>
-            <span class="cgm-vt-value">${escapeHtml(domain)}</span>
-          </div>
-          <div class="cgm-vt-item">
-            <span class="cgm-vt-label">Malicious</span>
-            <span class="cgm-vt-value" style="color:${malColor};font-weight:700">${vt.malicious ?? 0}</span>
-          </div>
-          <div class="cgm-vt-item">
-            <span class="cgm-vt-label">Suspicious</span>
-            <span class="cgm-vt-value" style="color:${susColor}">${vt.suspicious ?? 0}</span>
-          </div>
-          <div class="cgm-vt-item">
-            <span class="cgm-vt-label">Harmless</span>
-            <span class="cgm-vt-value">${vt.harmless ?? 0}</span>
-          </div>
-          <div class="cgm-vt-item">
-            <span class="cgm-vt-label">Reputation</span>
-            <span class="cgm-vt-value">${vt.reputation ?? "—"}</span>
-          </div>
+          <div class="cgm-vt-item"><span class="cgm-vt-label">Sender domain</span><span class="cgm-vt-value">${escapeHtml(domain)}</span></div>
+          <div class="cgm-vt-item"><span class="cgm-vt-label">Checked</span><span class="cgm-vt-value">${escapeHtml(queried)}</span></div>
+          <div class="cgm-vt-item"><span class="cgm-vt-label">Worst domain</span><span class="cgm-vt-value">${escapeHtml(worst || "—")}</span></div>
+          <div class="cgm-vt-item"><span class="cgm-vt-label">Malicious</span><span class="cgm-vt-value" style="color:${malColor};font-weight:700">${mal}</span></div>
+          <div class="cgm-vt-item"><span class="cgm-vt-label">Suspicious</span><span class="cgm-vt-value" style="color:${susColor}">${sus}</span></div>
+          <div class="cgm-vt-item"><span class="cgm-vt-label">Reputation</span><span class="cgm-vt-value">${rep}</span></div>
         </div>`;
     } else {
       const reason = vt.reason || "unavailable";
@@ -462,7 +523,6 @@ console.log("[CognitoMail] content script loaded —", location.href);
         </div>`;
     }
 
-    // Threat signals grid
     const signals = [
       ["URLs found", d.url_count ?? 0],
       ["IP-based URL", d.has_ip_based_url ? "Yes" : "No"],
@@ -489,6 +549,11 @@ console.log("[CognitoMail] content script loaded —", location.href);
       .join("");
 
     const predictedLabel = score >= 50 ? 1 : 0;
+    const methodLabel = (data.method || "ml").includes("rules")
+      ? "🤖 ML + Rules"
+      : data.method === "ml"
+        ? "🤖 ML Model"
+        : "📋 Rule-based";
 
     c.innerHTML = `
       <div class="cgm-panel">
@@ -517,10 +582,15 @@ console.log("[CognitoMail] content script loaded —", location.href);
             <div class="cgm-score-meta">
               <div class="cgm-score-label">Risk Score</div>
               <div class="cgm-score-sublabel">out of 100</div>
-              <div class="cgm-method-badge">${data.method === "ml" ? "🤖 ML Model" : "📋 Rule-based"}</div>
+              <div class="cgm-method-badge">${methodLabel}</div>
               ${
                 data.confidence != null
                   ? `<div class="cgm-conf">Confidence: ${Math.round(data.confidence * 100)}%</div>`
+                  : ""
+              }
+              ${
+                data.rule_boost
+                  ? `<div class="cgm-conf">Rule boost: +${data.rule_boost}</div>`
                   : ""
               }
             </div>
@@ -536,7 +606,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
             ${authChip("DMARC", emailData.dmarc)}
           </div>
 
-          <div class="cgm-section-label" style="margin-top:12px">VirusTotal (sender domain)</div>
+          <div class="cgm-section-label" style="margin-top:12px">VirusTotal</div>
           ${vtHTML}
 
           <div class="cgm-section-label" style="margin-top:12px">Threat signals</div>
@@ -549,6 +619,8 @@ console.log("[CognitoMail] content script loaded —", location.href);
           </div>
         </div>
       </div>`;
+
+    injectSideBadge(data);
 
     c.querySelectorAll(".cgm-fb-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -595,14 +667,5 @@ console.log("[CognitoMail] content script loaded —", location.href);
       </div>`;
   }
 
-  function escapeHtml(str) {
-    return String(str || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  // Kick once after load
   setTimeout(onDomSettled, 1200);
 })();
