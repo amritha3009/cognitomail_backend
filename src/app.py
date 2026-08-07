@@ -19,26 +19,58 @@ Env (Render):
     PORT
 """
 
+"""
+app.py — CognitoMail backend
+"""
+
 import os
 import sys
 import re
+import csv
 import logging
+
+# Make src/ importable no matter how gunicorn is started
+_SRC = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_SRC)
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import joblib
 import numpy as np
 import requests
-import csv   # add this with the other imports
-
-from feature_extractor import extract_features, FEATURE_NAMES
-from active_learning import active_learning_meta   # ADD
 from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-sys.path.insert(0, os.path.dirname(__file__))
 from feature_extractor import extract_features, FEATURE_NAMES
+
+try:
+    from active_learning import active_learning_meta
+except ImportError:
+    def active_learning_meta(result):
+        return {
+            "p_phishing": None,
+            "uncertainty": None,
+            "needs_review": False,
+            "review_reason": None,
+        }
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+VT_API_KEY = os.environ.get("VT_API_KEY", "").strip()
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
+MODEL_PATH = os.path.join(MODELS_DIR, "phishing_model.pkl")
+FEEDBACK_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "data", "raw", "feedback_log.csv"
+)
+
+pipeline = None
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
