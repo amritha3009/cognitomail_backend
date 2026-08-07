@@ -331,3 +331,14 @@
 .cgm-error .cgm-body {
   padding-bottom: 16px;
 }
+
+.cgm-review-hint {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  background: #3a2e10;
+  border: 1px solid #f9ab00;
+  border-radius: 8px;
+  color: #f9ab00;
+  font-size: 12px;
+  line-height: 1.4;
+}

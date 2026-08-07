@@ -274,18 +274,19 @@ def _evaluate_on_simulation_emails(pipeline, report_file: str = None):
 # Feedback logging — for future retraining (online learning foundation)
 # ---------------------------------------------------------------------------
 
-def log_feedback(email: dict, predicted_label: int, correct_label: int):
+def log_feedback(
+    email: dict,
+    predicted_label: int,
+    correct_label: int,
+    uncertainty: float = None,
+    needs_review: bool = False,
+    p_phishing: float = None,
+):
     """
-    Call this from app.py when a user confirms or corrects a verdict.
-    Appends the email + correct label to data/raw/feedback_log.csv.
+    Append a user correction to data/raw/feedback_log.csv for active learning.
 
-    This is NOT used in training yet — it builds a dataset for future
-    retraining rounds. Prevents overfitting by keeping feedback separate
-    until you have enough samples for a meaningful retrain.
-
-    Usage in app.py:
-        if user clicked "Mark as Phishing":
-            log_feedback(email_dict, predicted=0, correct=1)
+    Extra fields (uncertainty, needs_review, p_phishing) let retrain_with_feedback.py
+    up-weight hard / uncertain samples.
     """
     import csv
     feedback_path = os.path.join(
@@ -293,35 +294,40 @@ def log_feedback(email: dict, predicted_label: int, correct_label: int):
     )
     os.makedirs(os.path.dirname(feedback_path), exist_ok=True)
 
-    fieldnames = ["sender", "subject", "body", "urls", "spf", "dkim", "dmarc",
-                  "predicted_label", "label"]
+    fieldnames = [
+        "sender", "subject", "body", "urls", "spf", "dkim", "dmarc",
+        "predicted_label", "label",
+        "uncertainty", "needs_review", "p_phishing",
+    ]
     file_exists = os.path.exists(feedback_path)
 
     with open(feedback_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         if not file_exists:
             writer.writeheader()
         writer.writerow({
             "sender":          email.get("sender", ""),
             "subject":         email.get("subject", ""),
-            "body":            email.get("body", "")[:500],   # truncate for storage
-            "urls":            "|".join(email.get("urls", [])),
+            "body":            (email.get("body", "") or "")[:800],
+            "urls":            "|".join(email.get("urls", []) or []),
             "spf":             email.get("spf", "none"),
             "dkim":            email.get("dkim", "none"),
             "dmarc":           email.get("dmarc", "none"),
             "predicted_label": predicted_label,
             "label":           correct_label,
+            "uncertainty":     "" if uncertainty is None else round(float(uncertainty), 4),
+            "needs_review":    1 if needs_review else 0,
+            "p_phishing":      "" if p_phishing is None else round(float(p_phishing), 4),
         })
 
-    # Remind researcher when enough feedback for a retrain has accumulated
     try:
-        with open(feedback_path, "r") as f:
-            count = sum(1 for _ in f) - 1   # subtract header
-        if count > 0 and count % 50 == 0:
+        with open(feedback_path, "r", encoding="utf-8") as f:
+            count = max(0, sum(1 for _ in f) - 1)
+        if count > 0 and count % 25 == 0:
             log.info(
-                f"Feedback log now has {count} entries. "
-                f"Consider retraining: move feedback_log.csv entries into "
-                f"a new dataset and run train_model.py."
+                "Feedback log has %d entries. "
+                "Run: python src/retrain_with_feedback.py",
+                count,
             )
     except Exception:
         pass

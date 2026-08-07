@@ -612,20 +612,24 @@ console.log("[CognitoMail] content script loaded —", location.href);
           <div class="cgm-section-label" style="margin-top:12px">Threat signals</div>
           <div class="cgm-signals-grid">${signalsHTML}</div>
 
+                    ${
+            data.needs_review
+              ? `<div class="cgm-review-hint">⚠ Uncertain prediction — your feedback is especially useful</div>`
+              : ""
+          }
+
           <div class="cgm-feedback-row">
             <span>Was this verdict correct?</span>
             <button class="cgm-fb-btn cgm-fb-yes" data-label="${predictedLabel}" data-correct="1">👍 Yes</button>
             <button class="cgm-fb-btn cgm-fb-no"  data-label="${predictedLabel}" data-correct="0">👎 No</button>
           </div>
-        </div>
-      </div>`;
 
     injectSideBadge(data);
 
-    c.querySelectorAll(".cgm-fb-btn").forEach((btn) => {
+        c.querySelectorAll(".cgm-fb-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const predicted = parseInt(btn.dataset.label);
-        const isCorrect = parseInt(btn.dataset.correct);
+        const predicted = parseInt(btn.dataset.label, 10);
+        const isCorrect = parseInt(btn.dataset.correct, 10);
         const correctLabel = isCorrect ? predicted : predicted === 1 ? 0 : 1;
         try {
           chrome.runtime.sendMessage({
@@ -634,16 +638,23 @@ console.log("[CognitoMail] content script loaded —", location.href);
               email: emailData,
               predicted_label: predicted,
               correct_label: correctLabel,
+              uncertainty: data.uncertainty ?? null,
+              needs_review: data.needs_review ?? false,
+              p_phishing: data.p_phishing ?? data.confidence ?? null,
             },
           });
-        } catch (_) {}
+        } catch (e) {
+          console.debug("[CognitoMail] Feedback not sent — context invalidated.");
+        }
         const row = c.querySelector(".cgm-feedback-row");
-        if (row)
+        if (row) {
           row.innerHTML =
             '<span style="color:#00c9a7;font-weight:600">✓ Feedback recorded — thank you!</span>';
+        }
+        const hint = c.querySelector(".cgm-review-hint");
+        if (hint) hint.remove();
       });
     });
-  }
 
   function injectErrorPanel(msg) {
     const c = getPanelContainer();

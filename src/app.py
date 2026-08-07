@@ -26,6 +26,10 @@ import logging
 import joblib
 import numpy as np
 import requests
+import csv   # add this with the other imports
+
+from feature_extractor import extract_features, FEATURE_NAMES
+from active_learning import active_learning_meta   # ADD
 from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -42,6 +46,9 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 VT_API_KEY = os.environ.get("VT_API_KEY", "").strip()
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
 MODEL_PATH = os.path.join(MODELS_DIR, "phishing_model.pkl")
+FEEDBACK_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "data", "raw", "feedback_log.csv"
+)
 
 pipeline = None
 
@@ -433,6 +440,7 @@ def health():
         "status": "ok",
         "model_loaded": pipeline is not None,
         "virustotal_configured": bool(VT_API_KEY),
+        "active_learning": True,
     })
 
 
@@ -524,11 +532,14 @@ def analyze():
             result["flags"].append(
                 f"VirusTotal: {sus} engines marked {worst} as suspicious"
             )
+        # Active learning metadata
+    al = active_learning_meta(result)
+    result.update(al)
 
     log.info(
         f"Analyzed | verdict={result['verdict']} score={result['risk_score']} "
         f"boost={result.get('rule_boost', 0)} method={result['method']} "
-        f"domains={domains_to_check}"
+        f"needs_review={result.get('needs_review')} uncertainty={result.get('uncertainty')}"
     )
     return jsonify(result)
 
@@ -545,13 +556,62 @@ def feedback():
     if predicted_label not in (0, 1) or correct_label not in (0, 1):
         return jsonify({"error": "predicted_label and correct_label must be 0 or 1"}), 400
 
+    uncertainty = data.get("uncertainty")
+    needs_review = bool(data.get("needs_review", False))
+    p_phishing = data.get("p_phishing")
+
     try:
+        from train_model import log_feedback
+        log_feedback(
+            email_dict,
+            predicted_label,
+            correct_label,
+            uncertainty=uncertainty,
+            needs_review=needs_review,
+            p_phishing=p_phishing,
+        )
+        return jsonify({
+            "status": "logged",
+            "message": "Thank you — this label will improve the next retrain.",
+            "active_learning": True,
+        })
+    except TypeError:
+        # Fallback if train_model.log_feedback not yet updated
         from train_model import log_feedback
         log_feedback(email_dict, predicted_label, correct_label)
         return jsonify({"status": "logged", "message": "Thank you."})
     except Exception as e:
         log.error(f"Feedback error: {e}")
         return jsonify({"error": "Failed to log feedback"}), 500
+
+@app.route("/feedback-stats", methods=["GET"])
+def feedback_stats():
+    if not os.path.exists(FEEDBACK_PATH):
+        return jsonify({
+            "count": 0, "corrections": 0, "high_uncertainty": 0,
+            "ready_to_retrain": False,
+        })
+    count = corrections = high_u = 0
+    with open(FEEDBACK_PATH, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            count += 1
+            try:
+                if int(row.get("predicted_label", -1)) != int(row.get("label", -2)):
+                    corrections += 1
+            except ValueError:
+                pass
+            try:
+                if float(row.get("uncertainty") or 0) >= 0.6:
+                    high_u += 1
+            except ValueError:
+                pass
+    return jsonify({
+        "count": count,
+        "corrections": corrections,
+        "high_uncertainty": high_u,
+        "ready_to_retrain": count >= 25,
+        "hint": "Run python src/retrain_with_feedback.py" if count >= 25 else "Collect more feedback",
+    })
 
 
 if __name__ == "__main__":
