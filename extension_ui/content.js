@@ -1,5 +1,5 @@
 // content.js — CognitoMail v1.3
-// Gmail + Outlook detection | detailed panel | VirusTotal | side risk badge
+// Gmail + Outlook | panel | VirusTotal | side badge | active-learning feedback
 console.log("[CognitoMail] content script loaded —", location.href);
 
 (function () {
@@ -13,13 +13,13 @@ console.log("[CognitoMail] content script loaded —", location.href);
 
   const DEBOUNCE_MS = 600;
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-
-  function qs(sel, root = document) {
-    try { return root.querySelector(sel); } catch { return null; }
+  function qs(sel, root) {
+    root = root || document;
+    try { return root.querySelector(sel); } catch (e) { return null; }
   }
-  function qsa(sel, root = document) {
-    try { return Array.from(root.querySelectorAll(sel)); } catch { return []; }
+  function qsa(sel, root) {
+    root = root || document;
+    try { return Array.from(root.querySelectorAll(sel)); } catch (e) { return []; }
   }
   function text(el) {
     return el ? (el.innerText || el.textContent || "").trim() : "";
@@ -32,9 +32,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
       .replace(/"/g, "&quot;");
   }
 
-  // ── Observer ───────────────────────────────────────────────────────────────
-
-  const observer = new MutationObserver(() => {
+  const observer = new MutationObserver(function () {
     if (isInjecting) return;
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(onDomSettled, DEBOUNCE_MS);
@@ -51,7 +49,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
     startObserving();
   }
 
-  window.addEventListener("hashchange", () => {
+  window.addEventListener("hashchange", function () {
     lastEmailSignature = null;
     isAnalysing = false;
     removePanel();
@@ -59,8 +57,8 @@ console.log("[CognitoMail] content script loaded —", location.href);
     setTimeout(onDomSettled, 400);
   });
 
-  document.addEventListener("click", (e) => {
-    const target = e.target;
+  document.addEventListener("click", function (e) {
+    var target = e.target;
     if (!target) return;
     if (
       target.closest(".zA") ||
@@ -73,8 +71,6 @@ console.log("[CognitoMail] content script loaded —", location.href);
     }
   }, true);
 
-  // ── Main settle handler ────────────────────────────────────────────────────
-
   function onDomSettled() {
     if (isAnalysing) return;
 
@@ -84,16 +80,16 @@ console.log("[CognitoMail] content script loaded —", location.href);
       isAnalysing = false;
       removePanel();
       removeSideBadge();
-      try { chrome.runtime.sendMessage({ type: "CLEAR_RESULT" }); } catch (_) {}
+      try { chrome.runtime.sendMessage({ type: "CLEAR_RESULT" }); } catch (e) {}
     }
 
-    const emailData = extractEmailData();
+    var emailData = extractEmailData();
     if (!emailData) {
       lastEmailSignature = null;
       return;
     }
 
-    const sig = (
+    var sig = (
       emailData.subject + "||" + emailData.sender + "||" + emailData.body.slice(0, 80)
     ).toLowerCase();
     if (sig === lastEmailSignature) return;
@@ -103,87 +99,68 @@ console.log("[CognitoMail] content script loaded —", location.href);
     triggerAnalysis(emailData);
   }
 
-  // ── Extraction router ──────────────────────────────────────────────────────
-
   function extractEmailData() {
-    const host = location.hostname;
+    var host = location.hostname;
     if (host === "mail.google.com") return extractGmail();
-    if (host.includes("outlook") || host.includes("office.com") || host.includes("office365")) {
+    if (host.indexOf("outlook") !== -1 || host.indexOf("office.com") !== -1 || host.indexOf("office365") !== -1) {
       return extractOutlook();
     }
     return null;
   }
 
-  // ── Gmail ──────────────────────────────────────────────────────────────────
-
   function extractGmail() {
-    const isConversation =
-      location.hash.includes("/") ||
+    var isConversation =
+      location.hash.indexOf("/") !== -1 ||
       !!qs("[data-thread-perm-id]") ||
       !!qs("[data-legacy-thread-id]") ||
       !!qs("h2.hP") ||
       !!qs(".ha h2") ||
       !!qs('[role="main"] h2');
 
-    if (!isConversation) {
-      console.debug("[CognitoMail] Gmail: no open conversation");
-      return null;
-    }
+    if (!isConversation) return null;
 
-    const subjectEl =
+    var subjectEl =
       qs("h2.hP") ||
       qs("[data-thread-perm-id] h2") ||
       qs(".ha h2") ||
       qs('[role="main"] h2') ||
       qs(".a98.iY h2") ||
-      qs("h2[data-thread-perm-id]") ||
       qs('[role="main"] .hP');
 
-    const subject = text(subjectEl);
-    if (!subject) {
-      console.debug("[CognitoMail] Gmail: subject not found");
-      return null;
-    }
+    var subject = text(subjectEl);
+    if (!subject) return null;
 
-    let bodyEl =
+    var bodyEl =
       qs(".a3s.aiL") ||
       qs(".ii.gt .a3s") ||
       qs(".a3s") ||
       qs('[role="main"] .ii.gt') ||
-      qs(".Am.Al.editable") ||
       qs('[role="main"] .adP.adO');
 
     if (!bodyEl) {
-      const candidates = qsa(
-        '[role="main"] div[dir="ltr"], [role="main"] div[dir="auto"], [role="main"] .ii'
-      );
-      let best = null, bestLen = 0;
-      for (const el of candidates) {
-        const t = text(el);
+      var candidates = qsa('[role="main"] div[dir="ltr"], [role="main"] div[dir="auto"], [role="main"] .ii');
+      var best = null, bestLen = 0, i, t;
+      for (i = 0; i < candidates.length; i++) {
+        t = text(candidates[i]);
         if (t.length > bestLen && t.length > 40) {
-          best = el;
+          best = candidates[i];
           bestLen = t.length;
         }
       }
       bodyEl = best;
     }
 
-    if (!bodyEl) {
-      console.debug("[CognitoMail] Gmail: body not found");
-      return null;
-    }
-
-    const body = text(bodyEl);
+    if (!bodyEl) return null;
+    var body = text(bodyEl);
     if (body.length < 5) return null;
 
-    let sender = "unknown";
-    const senderEl =
+    var sender = "unknown";
+    var senderEl =
       qs(".gD") ||
       qs("[email]") ||
       qs(".go") ||
       qs("[data-hovercard-id]") ||
-      qs(".yW span[email]") ||
-      qs(".qu .go .g2");
+      qs(".yW span[email]");
 
     if (senderEl) {
       sender =
@@ -194,34 +171,25 @@ console.log("[CognitoMail] content script loaded —", location.href);
     }
 
     if (!sender || sender === "unknown") {
-      const spans = qsa(
-        '[role="main"] span[email], [role="main"] a[email], [role="main"] span[data-hovercard-id]'
-      );
-      for (const s of spans) {
-        const e = s.getAttribute("email") || s.getAttribute("data-hovercard-id");
-        if (e && e.includes("@")) {
+      var spans = qsa('[role="main"] span[email], [role="main"] a[email], [role="main"] span[data-hovercard-id]');
+      for (i = 0; i < spans.length; i++) {
+        var e = spans[i].getAttribute("email") || spans[i].getAttribute("data-hovercard-id");
+        if (e && e.indexOf("@") !== -1) {
           sender = e;
           break;
         }
       }
     }
 
-    // Parse "Name <email@domain>" if needed
-    if (sender && sender.includes("<") && sender.includes("@")) {
-      const m = sender.match(/<([^>]+@[^>]+)>/);
+    if (sender && sender.indexOf("<") !== -1 && sender.indexOf("@") !== -1) {
+      var m = sender.match(/<([^>]+@[^>]+)>/);
       if (m) sender = m[1].trim();
     }
 
-    console.debug("[CognitoMail] Gmail extracted:", {
-      subject: subject.slice(0, 40),
-      sender,
-      bodyLen: body.length,
-    });
-
     return {
       sender: sender || "unknown",
-      subject,
-      body,
+      subject: subject,
+      body: body,
       urls: extractUrls(bodyEl.innerHTML || body),
       spf: extractAuth("spf"),
       dkim: extractAuth("dkim"),
@@ -229,57 +197,45 @@ console.log("[CognitoMail] content script loaded —", location.href);
     };
   }
 
-  // ── Outlook ────────────────────────────────────────────────────────────────
-
   function extractOutlook() {
-    const subjectEl =
+    var subjectEl =
       qs('[data-testid="subject"]') ||
       qs('[aria-label="Subject"]') ||
       qs(".allowTextSelection") ||
-      qs('[role="heading"][aria-level="1"]') ||
-      qs("div[data-automationid='Subject']") ||
-      qs('[class*="Subject"]');
+      qs('[role="heading"][aria-level="1"]');
 
-    const senderEl =
+    var senderEl =
       qs('[data-testid="senderName"]') ||
       qs('[aria-label*="From"]') ||
       qs(".OZZZK") ||
-      qs('[class*="PersonName"]') ||
-      qs("span[title*='@']") ||
-      qs('[data-automationid="From"]');
+      qs("span[title*='@']");
 
-    const bodyEl =
+    var bodyEl =
       qs('[data-testid="emailBodyContainer"]') ||
       qs('[aria-label="Message body"]') ||
-      qs(".Wr[role='document']") ||
-      qs('[role="document"]') ||
-      qs("div[class*='UniqueMessageBody']") ||
-      qs("div[class*='MessageBody']");
+      qs('[role="document"]');
 
-    if (!subjectEl || !bodyEl) {
-      console.debug("[CognitoMail] Outlook: missing subject or body");
-      return null;
-    }
+    if (!subjectEl || !bodyEl) return null;
 
-    const subject = text(subjectEl);
-    const body = text(bodyEl);
+    var subject = text(subjectEl);
+    var body = text(bodyEl);
     if (!subject || body.length < 5) return null;
 
-    let sender = text(senderEl) || "unknown";
+    var sender = text(senderEl) || "unknown";
     if (senderEl) {
-      const title = senderEl.getAttribute("title") || senderEl.getAttribute("aria-label") || "";
-      const m = title.match(/[\w.+-]+@[\w.-]+\.\w+/);
-      if (m) sender = m[0];
+      var title = senderEl.getAttribute("title") || senderEl.getAttribute("aria-label") || "";
+      var mm = title.match(/[\w.+-]+@[\w.-]+\.\w+/);
+      if (mm) sender = mm[0];
     }
-    if (sender.includes("<") && sender.includes("@")) {
-      const m = sender.match(/<([^>]+@[^>]+)>/);
-      if (m) sender = m[1].trim();
+    if (sender.indexOf("<") !== -1 && sender.indexOf("@") !== -1) {
+      var m2 = sender.match(/<([^>]+@[^>]+)>/);
+      if (m2) sender = m2[1].trim();
     }
 
     return {
-      sender,
-      subject,
-      body,
+      sender: sender,
+      subject: subject,
+      body: body,
       urls: extractUrls(bodyEl.innerHTML || body),
       spf: "none",
       dkim: "none",
@@ -288,35 +244,34 @@ console.log("[CognitoMail] content script loaded —", location.href);
   }
 
   function extractAuth(protocol) {
-    const detailSpans = qsa(".aZy, .ajz, [data-tooltip], .ajT");
-    for (const span of detailSpans) {
-      const t = (text(span) + " " + (span.getAttribute("data-tooltip") || "")).toLowerCase();
-      if (t.includes(protocol)) {
-        if (t.includes("pass")) return "pass";
-        if (t.includes("fail") || t.includes("softfail")) return "fail";
+    var detailSpans = qsa(".aZy, .ajz, [data-tooltip], .ajT");
+    for (var i = 0; i < detailSpans.length; i++) {
+      var span = detailSpans[i];
+      var t = (text(span) + " " + (span.getAttribute("data-tooltip") || "")).toLowerCase();
+      if (t.indexOf(protocol) !== -1) {
+        if (t.indexOf("pass") !== -1) return "pass";
+        if (t.indexOf("fail") !== -1 || t.indexOf("softfail") !== -1) return "fail";
       }
     }
     return "none";
   }
 
   function extractUrls(html) {
-    const matches = (html || "").match(/https?:\/\/[^\s"'<>]+/g) || [];
-    return [...new Set(matches)].slice(0, 20);
+    var matches = (html || "").match(/https?:\/\/[^\s"'<>]+/g) || [];
+    return Array.from(new Set(matches)).slice(0, 20);
   }
-
-  // ── Analysis ───────────────────────────────────────────────────────────────
 
   function triggerAnalysis(emailData) {
     isAnalysing = true;
-    safeInject(() => {
+    safeInject(function () {
       injectLoadingPanel();
       injectSideBadgeLoading();
     });
 
-    const safetyRelease = setTimeout(() => {
+    var safetyRelease = setTimeout(function () {
       if (isAnalysing) {
         isAnalysing = false;
-        safeInject(() => {
+        safeInject(function () {
           injectErrorPanel("CognitoMail: request timed out. Is the Render service awake?");
           removeSideBadge();
         });
@@ -324,30 +279,31 @@ console.log("[CognitoMail] content script loaded —", location.href);
     }, 20000);
 
     try {
-      chrome.runtime.sendMessage({ type: "ANALYZE_EMAIL", email: emailData }, (response) => {
+      chrome.runtime.sendMessage({ type: "ANALYZE_EMAIL", email: emailData }, function (response) {
         clearTimeout(safetyRelease);
         isAnalysing = false;
 
         if (chrome.runtime.lastError) {
-          safeInject(() => {
+          safeInject(function () {
             injectErrorPanel("CognitoMail: background not responding. Reload the tab.");
             removeSideBadge();
           });
           return;
         }
         if (!response || !response.ok) {
-          safeInject(() => {
-            injectErrorPanel(response?.error || "CognitoMail: backend unreachable. Check Render.");
+          safeInject(function () {
+            injectErrorPanel((response && response.error) || "CognitoMail: backend unreachable. Check Render.");
             removeSideBadge();
           });
           return;
         }
-        safeInject(() => injectResultPanel(response.result, emailData));
+        safeInject(function () {
+          injectResultPanel(response.result, emailData);
+        });
       });
     } catch (e) {
       clearTimeout(safetyRelease);
       isAnalysing = false;
-      console.debug("[CognitoMail] context invalidated");
     }
   }
 
@@ -356,7 +312,7 @@ console.log("[CognitoMail] content script loaded —", location.href);
     observer.disconnect();
     try { fn(); }
     finally {
-      setTimeout(() => {
+      setTimeout(function () {
         isInjecting = false;
         startObserving();
       }, 250);
@@ -364,19 +320,17 @@ console.log("[CognitoMail] content script loaded —", location.href);
   }
 
   function removePanel() {
-    const old = document.getElementById("cognitomail-panel-container");
+    var old = document.getElementById("cognitomail-panel-container");
     if (old) old.remove();
   }
 
   function removeSideBadge() {
-    const b = document.getElementById("cognitomail-side-badge");
+    var b = document.getElementById("cognitomail-side-badge");
     if (b) b.remove();
   }
 
-  // ── Panel placement ────────────────────────────────────────────────────────
-
   function getPanelContainer() {
-    let c = document.getElementById("cognitomail-panel-container");
+    var c = document.getElementById("cognitomail-panel-container");
     if (c) return c;
 
     c = document.createElement("div");
@@ -384,253 +338,229 @@ console.log("[CognitoMail] content script loaded —", location.href);
     c.style.cssText =
       "margin:16px 0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;z-index:9999;";
 
-    const gmailBody =
-      qs(".a3s.aiL") ||
-      qs(".a3s") ||
-      qs('[role="main"] .ii.gt');
-
+    var gmailBody = qs(".a3s.aiL") || qs(".a3s") || qs('[role="main"] .ii.gt');
     if (gmailBody && gmailBody.parentNode) {
       gmailBody.parentNode.insertBefore(c, gmailBody.nextSibling);
       return c;
     }
 
-    const outlookBody =
-      qs('[data-testid="emailBodyContainer"]') ||
-      qs('[role="document"]');
-
+    var outlookBody = qs('[data-testid="emailBodyContainer"]') || qs('[role="document"]');
     if (outlookBody && outlookBody.parentNode) {
       outlookBody.parentNode.insertBefore(c, outlookBody.nextSibling);
       return c;
     }
 
-    const main = qs('[role="main"]') || document.body;
+    var main = qs('[role="main"]') || document.body;
     main.prepend(c);
     return c;
   }
 
-  // ── Side badge ─────────────────────────────────────────────────────────────
-
   function injectSideBadgeLoading() {
     removeSideBadge();
-    const badge = document.createElement("div");
+    var badge = document.createElement("div");
     badge.id = "cognitomail-side-badge";
     badge.className = "cgm-side-loading";
-    badge.innerHTML = `
-      <div class="cgm-side-spinner"></div>
-      <div class="cgm-side-label">Scanning…</div>
-      <div class="cgm-side-sub">CognitoMail</div>
-    `;
+    badge.innerHTML =
+      '<div class="cgm-side-spinner"></div>' +
+      '<div class="cgm-side-label">Scanning…</div>' +
+      '<div class="cgm-side-sub">CognitoMail</div>';
     document.body.appendChild(badge);
   }
 
   function injectSideBadge(data) {
     removeSideBadge();
-    const score = data.risk_score ?? 0;
-    const colour = score >= 70 ? "#ea4335" : score >= 40 ? "#f9ab00" : "#00c9a7";
-    const label =
+    var score = data.risk_score != null ? data.risk_score : 0;
+    var colour = score >= 70 ? "#ea4335" : score >= 40 ? "#f9ab00" : "#00c9a7";
+    var label =
       data.verdict ||
       (score >= 70 ? "Phishing" : score >= 40 ? "Suspicious" : "Likely Safe");
 
-    const badge = document.createElement("div");
+    var badge = document.createElement("div");
     badge.id = "cognitomail-side-badge";
-    badge.innerHTML = `
-      <div class="cgm-side-score" style="color:${colour}">${score}</div>
-      <div class="cgm-side-label">${escapeHtml(label)}</div>
-      <div class="cgm-side-sub">CognitoMail</div>
-    `;
+    badge.innerHTML =
+      '<div class="cgm-side-score" style="color:' + colour + '">' + score + "</div>" +
+      '<div class="cgm-side-label">' + escapeHtml(label) + "</div>" +
+      '<div class="cgm-side-sub">CognitoMail</div>';
     document.body.appendChild(badge);
   }
 
-  // ── Loading panel ──────────────────────────────────────────────────────────
-
   function injectLoadingPanel() {
-    const c = getPanelContainer();
-    c.innerHTML = `
-      <div class="cgm-panel cgm-loading">
-        <div class="cgm-header">
-          <div class="cgm-logo">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#00c9a7"/>
-            </svg>
-            CognitoMail
-          </div>
-          <span class="cgm-badge cgm-badge-scanning">Scanning…</span>
-        </div>
-        <div class="cgm-body">
-          <div class="cgm-scan-row">
-            <div class="cgm-spinner"></div>
-            <span>Analysing email — ML, auth, URLs &amp; VirusTotal…</span>
-          </div>
-          <div class="cgm-skeleton"></div>
-          <div class="cgm-skeleton" style="width:70%"></div>
-          <div class="cgm-skeleton" style="width:50%"></div>
-        </div>
-      </div>`;
+    var c = getPanelContainer();
+    c.innerHTML =
+      '<div class="cgm-panel cgm-loading">' +
+        '<div class="cgm-header">' +
+          '<div class="cgm-logo">' +
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none">' +
+              '<path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#00c9a7"/>' +
+            "</svg> CognitoMail" +
+          "</div>" +
+          '<span class="cgm-badge cgm-badge-scanning">Scanning…</span>' +
+        "</div>" +
+        '<div class="cgm-body">' +
+          '<div class="cgm-scan-row">' +
+            '<div class="cgm-spinner"></div>' +
+            "<span>Analysing email — ML, auth, URLs &amp; VirusTotal…</span>" +
+          "</div>" +
+          '<div class="cgm-skeleton"></div>' +
+          '<div class="cgm-skeleton" style="width:70%"></div>' +
+          '<div class="cgm-skeleton" style="width:50%"></div>' +
+        "</div>" +
+      "</div>";
   }
 
-  // ── Result panel ───────────────────────────────────────────────────────────
-
   function injectResultPanel(data, emailData) {
-    const c = getPanelContainer();
-    const score = data.risk_score ?? 0;
-    const colour = score >= 70 ? "#ea4335" : score >= 40 ? "#f9ab00" : "#00c9a7";
-    const verdictClass =
+    var c = getPanelContainer();
+    var score = data.risk_score != null ? data.risk_score : 0;
+    var colour = score >= 70 ? "#ea4335" : score >= 40 ? "#f9ab00" : "#00c9a7";
+    var verdictClass =
       score >= 70 ? "cgm-verdict-high" : score >= 40 ? "cgm-verdict-med" : "cgm-verdict-low";
 
-    const flagsHTML =
-      (data.flags || [])
-        .map((f) => `<div class="cgm-flag">${escapeHtml(f)}</div>`)
-        .join("") ||
+    var flagsHTML = (data.flags || [])
+      .map(function (f) { return '<div class="cgm-flag">' + escapeHtml(f) + "</div>"; })
+      .join("") ||
       '<div class="cgm-flag cgm-flag-ok">No significant phishing signals detected.</div>';
 
-    const authChip = (label, val) => {
-      const cls =
+    function authChip(label, val) {
+      var cls =
         val === "pass" ? "cgm-auth-pass" : val === "fail" ? "cgm-auth-fail" : "cgm-auth-unknown";
-      return `<span class="cgm-auth ${cls}">${label}: ${(val || "none").toUpperCase()}</span>`;
-    };
-
-    const d = data.details || {};
-    const vt = data.virustotal || {};
-    const domain = data.sender_domain || d.sender_domain || "—";
-
-    // VirusTotal block (supports multi-domain shape from new backend)
-    let vtHTML = "";
-    if (vt.available) {
-      const mal = vt.max_malicious ?? (vt.reports && vt.reports[0] && vt.reports[0].malicious) ?? vt.malicious ?? 0;
-      const sus = vt.max_suspicious ?? (vt.reports && vt.reports[0] && vt.reports[0].suspicious) ?? vt.suspicious ?? 0;
-      const harm = vt.harmless ?? (vt.reports && vt.reports[0] && vt.reports[0].harmless) ?? "—";
-      const rep = vt.reputation ?? (vt.reports && vt.reports[0] && vt.reports[0].reputation) ?? "—";
-      const worst = vt.worst_domain || domain;
-      const queried = (vt.queried || [domain]).join(", ");
-      const malColor = mal > 0 ? "#ea4335" : "#00c9a7";
-      const susColor = sus > 0 ? "#f9ab00" : "#9aa0b4";
-
-      vtHTML = `
-        <div class="cgm-vt-grid">
-          <div class="cgm-vt-item"><span class="cgm-vt-label">Sender domain</span><span class="cgm-vt-value">${escapeHtml(domain)}</span></div>
-          <div class="cgm-vt-item"><span class="cgm-vt-label">Checked</span><span class="cgm-vt-value">${escapeHtml(queried)}</span></div>
-          <div class="cgm-vt-item"><span class="cgm-vt-label">Worst domain</span><span class="cgm-vt-value">${escapeHtml(worst || "—")}</span></div>
-          <div class="cgm-vt-item"><span class="cgm-vt-label">Malicious</span><span class="cgm-vt-value" style="color:${malColor};font-weight:700">${mal}</span></div>
-          <div class="cgm-vt-item"><span class="cgm-vt-label">Suspicious</span><span class="cgm-vt-value" style="color:${susColor}">${sus}</span></div>
-          <div class="cgm-vt-item"><span class="cgm-vt-label">Reputation</span><span class="cgm-vt-value">${rep}</span></div>
-        </div>`;
-    } else {
-      const reason = vt.reason || "unavailable";
-      vtHTML = `
-        <div class="cgm-vt-fallback">
-          Domain: <b>${escapeHtml(domain)}</b><br>
-          <span style="color:#9aa0b4;font-size:11px">VirusTotal: ${escapeHtml(reason)}</span>
-        </div>`;
+      return '<span class="cgm-auth ' + cls + '">' + label + ": " + (val || "none").toUpperCase() + "</span>";
     }
 
-    const signals = [
-      ["URLs found", d.url_count ?? 0],
+    var d = data.details || {};
+    var vt = data.virustotal || {};
+    var domain = data.sender_domain || d.sender_domain || "—";
+
+    var vtHTML = "";
+    if (vt.available) {
+      var mal = vt.max_malicious != null ? vt.max_malicious : (vt.malicious != null ? vt.malicious : 0);
+      var sus = vt.max_suspicious != null ? vt.max_suspicious : (vt.suspicious != null ? vt.suspicious : 0);
+      var rep = vt.reputation != null ? vt.reputation : "—";
+      var worst = vt.worst_domain || domain;
+      var queried = (vt.queried || [domain]).join(", ");
+      var malColor = mal > 0 ? "#ea4335" : "#00c9a7";
+      var susColor = sus > 0 ? "#f9ab00" : "#9aa0b4";
+
+      vtHTML =
+        '<div class="cgm-vt-grid">' +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Sender domain</span><span class="cgm-vt-value">' + escapeHtml(domain) + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Checked</span><span class="cgm-vt-value">' + escapeHtml(queried) + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Worst domain</span><span class="cgm-vt-value">' + escapeHtml(worst || "—") + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Malicious</span><span class="cgm-vt-value" style="color:' + malColor + ';font-weight:700">' + mal + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Suspicious</span><span class="cgm-vt-value" style="color:' + susColor + '">' + sus + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Reputation</span><span class="cgm-vt-value">' + rep + "</span></div>" +
+        "</div>";
+    } else {
+      var reason = vt.reason || "unavailable";
+      vtHTML =
+        '<div class="cgm-vt-fallback">' +
+          "Domain: <b>" + escapeHtml(domain) + "</b><br>" +
+          '<span style="color:#9aa0b4;font-size:11px">VirusTotal: ' + escapeHtml(reason) + "</span>" +
+        "</div>";
+    }
+
+    var signals = [
+      ["URLs found", d.url_count != null ? d.url_count : 0],
       ["IP-based URL", d.has_ip_based_url ? "Yes" : "No"],
-      ["Suspicious TLDs", d.suspicious_tld_count ?? 0],
-      ["Non-HTTPS links", d.http_url_count ?? 0],
-      ["Urgency (subject)", d.subject_urgency_words ?? 0],
-      ["Urgency (body)", d.urgency_word_count ?? 0],
-      ["Credential words", d.credential_word_count ?? 0],
-      ["Brand mentions", d.brand_impersonation_count ?? 0],
-      ["Reward words", d.reward_word_count ?? 0],
-      ["Hidden elements", d.hidden_text_elements ?? 0],
-      ["HTML forms", d.html_form_elements ?? 0],
-      ["Redirect links", d.redirect_link_count ?? 0],
+      ["Suspicious TLDs", d.suspicious_tld_count != null ? d.suspicious_tld_count : 0],
+      ["Non-HTTPS links", d.http_url_count != null ? d.http_url_count : 0],
+      ["Urgency (subject)", d.subject_urgency_words != null ? d.subject_urgency_words : 0],
+      ["Urgency (body)", d.urgency_word_count != null ? d.urgency_word_count : 0],
+      ["Credential words", d.credential_word_count != null ? d.credential_word_count : 0],
+      ["Brand mentions", d.brand_impersonation_count != null ? d.brand_impersonation_count : 0],
+      ["Reward words", d.reward_word_count != null ? d.reward_word_count : 0],
+      ["Hidden elements", d.hidden_text_elements != null ? d.hidden_text_elements : 0],
+      ["HTML forms", d.html_form_elements != null ? d.html_form_elements : 0],
+      ["Redirect links", d.redirect_link_count != null ? d.redirect_link_count : 0],
     ];
 
-    const signalsHTML = signals
-      .map(([label, val]) => {
-        const highlight =
-          (typeof val === "number" && val > 0) || val === "Yes"
-            ? 'style="color:#f9ab00;font-weight:600"'
-            : "";
-        return `<div class="cgm-signal"><span>${label}</span><span ${highlight}>${val}</span></div>`;
-      })
-      .join("");
+    var signalsHTML = signals.map(function (pair) {
+      var label = pair[0], val = pair[1];
+      var highlight =
+        (typeof val === "number" && val > 0) || val === "Yes"
+          ? ' style="color:#f9ab00;font-weight:600"'
+          : "";
+      return '<div class="cgm-signal"><span>' + label + "</span><span" + highlight + ">" + val + "</span></div>";
+    }).join("");
 
-    const predictedLabel = score >= 50 ? 1 : 0;
-    const methodLabel = (data.method || "ml").includes("rules")
-      ? "🤖 ML + Rules"
-      : data.method === "ml"
-        ? "🤖 ML Model"
-        : "📋 Rule-based";
+    var predictedLabel = score >= 50 ? 1 : 0;
+    var methodStr = data.method || "ml";
+    var methodLabel =
+      methodStr.indexOf("rules") !== -1
+        ? "ML + Rules"
+        : methodStr === "ml"
+          ? "ML Model"
+          : "Rule-based";
 
-    c.innerHTML = `
-      <div class="cgm-panel">
-        <div class="cgm-header">
-          <div class="cgm-logo">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#00c9a7"/>
-            </svg>
-            CognitoMail
-          </div>
-          <span class="cgm-badge ${verdictClass}">${escapeHtml(data.verdict || "Analysed")}</span>
-        </div>
-        <div class="cgm-body">
-          <div class="cgm-score-row">
-            <div class="cgm-score-wrap">
-              <svg class="cgm-gauge" viewBox="0 0 80 80">
-                <circle cx="40" cy="40" r="32" fill="none" stroke="#1e2433" stroke-width="7"/>
-                <circle cx="40" cy="40" r="32" fill="none" stroke="${colour}" stroke-width="7"
-                  stroke-dasharray="${Math.round(score * 2.01)} 201"
-                  stroke-linecap="round"
-                  transform="rotate(-90 40 40)"
-                  class="cgm-gauge-arc"/>
-              </svg>
-              <div class="cgm-score-num" style="color:${colour}">${score}</div>
-            </div>
-            <div class="cgm-score-meta">
-              <div class="cgm-score-label">Risk Score</div>
-              <div class="cgm-score-sublabel">out of 100</div>
-              <div class="cgm-method-badge">${methodLabel}</div>
-              ${
-                data.confidence != null
-                  ? `<div class="cgm-conf">Confidence: ${Math.round(data.confidence * 100)}%</div>`
-                  : ""
-              }
-              ${
-                data.rule_boost
-                  ? `<div class="cgm-conf">Rule boost: +${data.rule_boost}</div>`
-                  : ""
-              }
-            </div>
-          </div>
+    var reviewHint = data.needs_review
+      ? '<div class="cgm-review-hint">Uncertain prediction — your feedback is especially useful</div>'
+      : "";
 
-          <div class="cgm-section-label">Findings</div>
-          <div class="cgm-flags">${flagsHTML}</div>
+    var confHtml =
+      data.confidence != null
+        ? '<div class="cgm-conf">Confidence: ' + Math.round(data.confidence * 100) + "%</div>"
+        : "";
+    var boostHtml =
+      data.rule_boost
+        ? '<div class="cgm-conf">Rule boost: +' + data.rule_boost + "</div>"
+        : "";
 
-          <div class="cgm-section-label" style="margin-top:12px">Authentication</div>
-          <div class="cgm-auth-row">
-            ${authChip("SPF", emailData.spf)}
-            ${authChip("DKIM", emailData.dkim)}
-            ${authChip("DMARC", emailData.dmarc)}
-          </div>
-
-          <div class="cgm-section-label" style="margin-top:12px">VirusTotal</div>
-          ${vtHTML}
-
-          <div class="cgm-section-label" style="margin-top:12px">Threat signals</div>
-          <div class="cgm-signals-grid">${signalsHTML}</div>
-
-                    ${
-            data.needs_review
-              ? `<div class="cgm-review-hint">⚠ Uncertain prediction — your feedback is especially useful</div>`
-              : ""
-          }
-
-          <div class="cgm-feedback-row">
-            <span>Was this verdict correct?</span>
-            <button class="cgm-fb-btn cgm-fb-yes" data-label="${predictedLabel}" data-correct="1">👍 Yes</button>
-            <button class="cgm-fb-btn cgm-fb-no"  data-label="${predictedLabel}" data-correct="0">👎 No</button>
-          </div>
+    c.innerHTML =
+      '<div class="cgm-panel">' +
+        '<div class="cgm-header">' +
+          '<div class="cgm-logo">' +
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none">' +
+              '<path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#00c9a7"/>' +
+            "</svg> CognitoMail" +
+          "</div>" +
+          '<span class="cgm-badge ' + verdictClass + '">' + escapeHtml(data.verdict || "Analysed") + "</span>" +
+        "</div>" +
+        '<div class="cgm-body">' +
+          '<div class="cgm-score-row">' +
+            '<div class="cgm-score-wrap">' +
+              '<svg class="cgm-gauge" viewBox="0 0 80 80">' +
+                '<circle cx="40" cy="40" r="32" fill="none" stroke="#1e2433" stroke-width="7"/>' +
+                '<circle cx="40" cy="40" r="32" fill="none" stroke="' + colour + '" stroke-width="7"' +
+                  ' stroke-dasharray="' + Math.round(score * 2.01) + ' 201"' +
+                  ' stroke-linecap="round" transform="rotate(-90 40 40)"/>' +
+              "</svg>" +
+              '<div class="cgm-score-num" style="color:' + colour + '">' + score + "</div>" +
+            "</div>" +
+            '<div class="cgm-score-meta">' +
+              '<div class="cgm-score-label">Risk Score</div>' +
+              '<div class="cgm-score-sublabel">out of 100</div>' +
+              '<div class="cgm-method-badge">' + methodLabel + "</div>" +
+              confHtml + boostHtml +
+            "</div>" +
+          "</div>" +
+          '<div class="cgm-section-label">Findings</div>' +
+          '<div class="cgm-flags">' + flagsHTML + "</div>" +
+          '<div class="cgm-section-label" style="margin-top:12px">Authentication</div>' +
+          '<div class="cgm-auth-row">' +
+            authChip("SPF", emailData.spf) +
+            authChip("DKIM", emailData.dkim) +
+            authChip("DMARC", emailData.dmarc) +
+          "</div>" +
+          '<div class="cgm-section-label" style="margin-top:12px">VirusTotal</div>' +
+          vtHTML +
+          '<div class="cgm-section-label" style="margin-top:12px">Threat signals</div>' +
+          '<div class="cgm-signals-grid">' + signalsHTML + "</div>" +
+          reviewHint +
+          '<div class="cgm-feedback-row">' +
+            "<span>Was this verdict correct?</span>" +
+            '<button class="cgm-fb-btn cgm-fb-yes" data-label="' + predictedLabel + '" data-correct="1">Yes</button>' +
+            '<button class="cgm-fb-btn cgm-fb-no" data-label="' + predictedLabel + '" data-correct="0">No</button>' +
+          "</div>" +
+        "</div>" +
+      "</div>";
 
     injectSideBadge(data);
 
-        c.querySelectorAll(".cgm-fb-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const predicted = parseInt(btn.dataset.label, 10);
-        const isCorrect = parseInt(btn.dataset.correct, 10);
-        const correctLabel = isCorrect ? predicted : predicted === 1 ? 0 : 1;
+    var buttons = c.querySelectorAll(".cgm-fb-btn");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].addEventListener("click", function () {
+        var predicted = parseInt(this.getAttribute("data-label"), 10);
+        var isCorrect = parseInt(this.getAttribute("data-correct"), 10);
+        var correctLabel = isCorrect ? predicted : predicted === 1 ? 0 : 1;
         try {
           chrome.runtime.sendMessage({
             type: "SEND_FEEDBACK",
@@ -638,44 +568,44 @@ console.log("[CognitoMail] content script loaded —", location.href);
               email: emailData,
               predicted_label: predicted,
               correct_label: correctLabel,
-              uncertainty: data.uncertainty ?? null,
-              needs_review: data.needs_review ?? false,
-              p_phishing: data.p_phishing ?? data.confidence ?? null,
+              uncertainty: data.uncertainty != null ? data.uncertainty : null,
+              needs_review: !!data.needs_review,
+              p_phishing: data.p_phishing != null ? data.p_phishing : (data.confidence != null ? data.confidence : null),
             },
           });
-        } catch (e) {
-          console.debug("[CognitoMail] Feedback not sent — context invalidated.");
-        }
-        const row = c.querySelector(".cgm-feedback-row");
+        } catch (err) {}
+        var row = c.querySelector(".cgm-feedback-row");
         if (row) {
           row.innerHTML =
-            '<span style="color:#00c9a7;font-weight:600">✓ Feedback recorded — thank you!</span>';
+            '<span style="color:#00c9a7;font-weight:600">Feedback recorded — thank you!</span>';
         }
-        const hint = c.querySelector(".cgm-review-hint");
+        var hint = c.querySelector(".cgm-review-hint");
         if (hint) hint.remove();
       });
-    });
+    }
+  }
 
   function injectErrorPanel(msg) {
-    const c = getPanelContainer();
-    c.innerHTML = `
-      <div class="cgm-panel cgm-error">
-        <div class="cgm-header">
-          <div class="cgm-logo">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#00c9a7"/>
-            </svg>
-            CognitoMail
-          </div>
-          <span class="cgm-badge" style="background:#3a1a1a;color:#ea4335">Offline</span>
-        </div>
-        <div class="cgm-body">
-          <div style="font-size:12px;color:#9aa0b4;line-height:1.6">${escapeHtml(msg)}</div>
-          <div style="margin-top:8px;font-size:11px;background:#0d1117;border-radius:6px;padding:8px;color:#00c9a7;font-family:monospace">
-            Check your Render deployment is running
-          </div>
-        </div>
-      </div>`;
+    var c = getPanelContainer();
+    c.innerHTML =
+      '<div class="cgm-panel cgm-error">' +
+        '<div class="cgm-header">' +
+          '<div class="cgm-logo">' +
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none">' +
+              '<path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#00c9a7"/>' +
+            "</svg> CognitoMail" +
+          "</div>" +
+          '<span class="cgm-badge" style="background:#3a1a1a;color:#ea4335">Offline</span>' +
+        "</div>" +
+        '<div class="cgm-body">' +
+          '<div style="font-size:12px;color:#9aa0b4;line-height:1.6">' +
+            escapeHtml(msg) +
+          "</div>" +
+          '<div style="margin-top:8px;font-size:11px;background:#0d1117;border-radius:6px;padding:8px;color:#00c9a7;font-family:monospace">' +
+            "Check your Render deployment is running" +
+          "</div>" +
+        "</div>" +
+      "</div>";
   }
 
   setTimeout(onDomSettled, 1200);
