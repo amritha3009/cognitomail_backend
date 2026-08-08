@@ -320,16 +320,52 @@ console.log("[CognitoMail] content script loaded —", location.href);
     };
   }
 
-  function extractAuth(protocol) {
-    var detailSpans = qsa(".aZy, .ajz, [data-tooltip], .ajT");
+    function extractAuth(protocol) {
+    // 1) Explicit auth labels in expanded headers / tooltips
+    var detailSpans = qsa(
+      ".aZy, .ajz, .ajT, [data-tooltip], span[title], div[title], " +
+      "[aria-label], .ajU, .ajV, .g2, .gD, .go"
+    );
     for (var i = 0; i < detailSpans.length; i++) {
       var span = detailSpans[i];
-      var t = (text(span) + " " + (span.getAttribute("data-tooltip") || "")).toLowerCase();
-      if (t.indexOf(protocol) !== -1) {
-        if (t.indexOf("pass") !== -1) return "pass";
-        if (t.indexOf("fail") !== -1 || t.indexOf("softfail") !== -1) return "fail";
+      var t = (
+        text(span) +
+        " " +
+        (span.getAttribute("data-tooltip") || "") +
+        " " +
+        (span.getAttribute("title") || "") +
+        " " +
+        (span.getAttribute("aria-label") || "")
+      ).toLowerCase();
+
+      if (t.indexOf(protocol) === -1) continue;
+
+      if (t.indexOf("pass") !== -1) return "pass";
+      if (t.indexOf("fail") !== -1 || t.indexOf("softfail") !== -1 || t.indexOf("soft-fail") !== -1) {
+        return "fail";
+      }
+      if (t.indexOf("none") !== -1 || t.indexOf("neutral") !== -1) return "none";
+    }
+
+    // 2) Full text scan of the message header area (Gmail "Show details")
+    var headerBlocks = qsa(
+      '[role="main"] .ajU, [role="main"] .ajV, [role="main"] .g2, ' +
+      '[role="main"] table, [role="main"] .adn, [role="main"] .gs'
+    );
+    for (var j = 0; j < headerBlocks.length; j++) {
+      var blockText = text(headerBlocks[j]).toLowerCase();
+      if (blockText.indexOf(protocol) === -1) continue;
+      // e.g. "spf: pass", "dkim: fail"
+      var re = new RegExp(protocol + "\\s*[:=]?\\s*(pass|fail|softfail|soft-fail|none|neutral)", "i");
+      var m = blockText.match(re);
+      if (m) {
+        var v = m[1].toLowerCase();
+        if (v === "pass") return "pass";
+        if (v === "fail" || v === "softfail" || v === "soft-fail") return "fail";
+        return "none";
       }
     }
+
     return "none";
   }
 
@@ -502,8 +538,20 @@ console.log("[CognitoMail] content script loaded —", location.href);
         val === "pass" ? "cgm-auth-pass" : val === "fail" ? "cgm-auth-fail" : "cgm-auth-unknown";
       return '<span class="cgm-auth ' + cls + '">' + label + ": " + (val || "none").toUpperCase() + "</span>";
     }
+        var authNote = "";
+    if (
+      (emailData.spf || "none") === "none" &&
+      (emailData.dkim || "none") === "none" &&
+      (emailData.dmarc || "none") === "none"
+    ) {
+      authNote =
+        '<div style="margin-top:6px;font-size:11px;color:#9aa0b4;line-height:1.4">' +
+        "Tip: in Gmail click the small ▼ next to the sender, then “Show original” / expand details " +
+        "so SPF, DKIM and DMARC appear — then click Refresh on the panel." +
+        "</div>";
+    }
 
-    var d = data.details || {};
+        var d = data.details || {};
     var vt = data.virustotal || {};
     var domain = data.sender_domain || d.sender_domain || "—";
 
@@ -511,23 +559,49 @@ console.log("[CognitoMail] content script loaded —", location.href);
     if (vt.available) {
       var mal = vt.max_malicious != null ? vt.max_malicious : (vt.malicious != null ? vt.malicious : 0);
       var sus = vt.max_suspicious != null ? vt.max_suspicious : (vt.suspicious != null ? vt.suspicious : 0);
-      var rep = vt.reputation != null ? vt.reputation : "—";
       var worst = vt.worst_domain || domain;
-      var queried = (vt.queried || [domain]).join(", ");
+
+      // Pull reputation from the worst report if present
+      var rep = "—";
+      var reports = vt.reports || [];
+      for (var ri = 0; ri < reports.length; ri++) {
+        if (reports[ri].domain === worst && reports[ri].available) {
+          if (reports[ri].reputation != null) rep = reports[ri].reputation;
+          break;
+        }
+      }
+      if (rep === "—" && vt.reputation != null) rep = vt.reputation;
+
+      var queriedList = vt.queried || [domain];
+      var queriedShort = queriedList.length <= 2
+        ? queriedList.join(", ")
+        : queriedList[0] + " +" + (queriedList.length - 1) + " more";
+
       var malColor = mal > 0 ? "#ea4335" : "#00c9a7";
       var susColor = sus > 0 ? "#f9ab00" : "#9aa0b4";
 
       vtHTML =
         '<div class="cgm-vt-grid">' +
-          '<div class="cgm-vt-item"><span class="cgm-vt-label">Sender domain</span><span class="cgm-vt-value">' + escapeHtml(domain) + "</span></div>" +
-          '<div class="cgm-vt-item"><span class="cgm-vt-label">Checked</span><span class="cgm-vt-value">' + escapeHtml(queried) + "</span></div>" +
-          '<div class="cgm-vt-item"><span class="cgm-vt-label">Worst domain</span><span class="cgm-vt-value">' + escapeHtml(worst || "—") + "</span></div>" +
-          '<div class="cgm-vt-item"><span class="cgm-vt-label">Malicious</span><span class="cgm-vt-value" style="color:' + malColor + ';font-weight:700">' + mal + "</span></div>" +
-          '<div class="cgm-vt-item"><span class="cgm-vt-label">Suspicious</span><span class="cgm-vt-value" style="color:' + susColor + '">' + sus + "</span></div>" +
-          '<div class="cgm-vt-item"><span class="cgm-vt-label">Reputation</span><span class="cgm-vt-value">' + rep + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Sender domain</span>' +
+            '<span class="cgm-vt-value">' + escapeHtml(domain) + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Domains checked</span>' +
+            '<span class="cgm-vt-value" title="' + escapeHtml(queriedList.join(", ")) + '">' +
+            escapeHtml(queriedShort) + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Worst domain</span>' +
+            '<span class="cgm-vt-value">' + escapeHtml(worst || "—") + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Malicious</span>' +
+            '<span class="cgm-vt-value" style="color:' + malColor + ';font-weight:700">' + mal + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Suspicious</span>' +
+            '<span class="cgm-vt-value" style="color:' + susColor + '">' + sus + "</span></div>" +
+          '<div class="cgm-vt-item"><span class="cgm-vt-label">Reputation</span>' +
+            '<span class="cgm-vt-value">' + escapeHtml(String(rep)) + "</span></div>" +
         "</div>";
     } else {
-      var reason = vt.reason || "unavailable";
+      var reason = vt.reason || (vt.available === false ? "unavailable" : "no data");
+      // If multi object has reports with reasons
+      if (!vt.reason && (vt.reports || []).length) {
+        reason = (vt.reports[0].reason) || reason;
+      }
       vtHTML =
         '<div class="cgm-vt-fallback">' +
           "Domain: <b>" + escapeHtml(domain) + "</b><br>" +
@@ -550,13 +624,18 @@ console.log("[CognitoMail] content script loaded —", location.href);
       ["Redirect links", d.redirect_link_count != null ? d.redirect_link_count : 0],
     ];
 
-    var signalsHTML = signals.map(function (pair) {
+        var signalsHTML = signals.map(function (pair) {
       var label = pair[0], val = pair[1];
       var highlight =
         (typeof val === "number" && val > 0) || val === "Yes"
           ? ' style="color:#f9ab00;font-weight:600"'
           : "";
-      return '<div class="cgm-signal"><span>' + label + "</span><span" + highlight + ">" + val + "</span></div>";
+      return (
+        '<div class="cgm-signal">' +
+          "<span>" + label + "</span>" +
+          "<span" + highlight + ">" + val + "</span>" +
+        "</div>"
+      );
     }).join("");
 
     var predictedLabel = score >= 50 ? 1 : 0;

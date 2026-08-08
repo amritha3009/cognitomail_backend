@@ -172,16 +172,16 @@
 .cgm-vt-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px 12px;
+  gap: 10px 14px;
   font-size: 12px;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .cgm-vt-item {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 0;
+  min-width: 0; /* critical for long domains */
 }
 
 .cgm-vt-label {
@@ -196,6 +196,7 @@
   word-break: break-all;
   overflow-wrap: anywhere;
   line-height: 1.35;
+  font-weight: 500;
 }
 
 .cgm-vt-fallback {
@@ -327,4 +328,37 @@
   color: #f9ab00;
   font-size: 12px;
   line-height: 1.4;
+}
+/* Threat signals */
+.cgm-signals-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.cgm-signal {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;              /* space between label and value */
+  color: #9aa0b4;
+  min-width: 0;
+  padding: 4px 0;
+  border-bottom: 1px solid #1a1f2e;
+}
+
+.cgm-signal span:first-child {
+  flex: 1;
+  min-width: 0;
+  padding-right: 6px;
+}
+
+.cgm-signal span:last-child {
+  color: #e8eaed;
+  font-weight: 600;
+  flex-shrink: 0;
+  text-align: right;
+  min-width: 1.5em;
 }
