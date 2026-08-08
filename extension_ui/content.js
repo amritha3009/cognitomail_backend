@@ -99,10 +99,15 @@ console.log("[CognitoMail] content script loaded —", location.href);
     triggerAnalysis(emailData);
   }
 
-  function extractEmailData() {
+    function extractEmailData() {
     var host = location.hostname;
     if (host === "mail.google.com") return extractGmail();
-    if (host.indexOf("outlook") !== -1 || host.indexOf("office.com") !== -1 || host.indexOf("office365") !== -1) {
+    if (
+      host.indexOf("outlook") !== -1 ||
+      host.indexOf("office.com") !== -1 ||
+      host.indexOf("office365") !== -1 ||
+      host.indexOf("cloud.microsoft") !== -1
+    ) {
       return extractOutlook();
     }
     return null;
@@ -198,39 +203,111 @@ console.log("[CognitoMail] content script loaded —", location.href);
   }
 
   function extractOutlook() {
+    // New Outlook (cloud.microsoft) + classic OWA selectors
     var subjectEl =
+      qs('[data-testid="message-subject"]') ||
       qs('[data-testid="subject"]') ||
+      qs('div[role="heading"][aria-level="2"]') ||
+      qs('div[role="heading"][aria-level="1"]') ||
       qs('[aria-label="Subject"]') ||
       qs(".allowTextSelection") ||
-      qs('[role="heading"][aria-level="1"]');
+      qs("div[class*='Subject']") ||
+      qs('[id*="Subject"]');
+
+    // Fallback: largest heading-like text in reading pane
+    if (!subjectEl) {
+      var headings = qsa('[role="main"] h1, [role="main"] h2, [role="main"] [role="heading"]');
+      for (var hi = 0; hi < headings.length; hi++) {
+        var ht = text(headings[hi]);
+        if (ht && ht.length > 2 && ht.length < 200) {
+          subjectEl = headings[hi];
+          break;
+        }
+      }
+    }
 
     var senderEl =
+      qs('[data-testid="message-sender"]') ||
       qs('[data-testid="senderName"]') ||
       qs('[aria-label*="From"]') ||
+      qs('span[title*="@"]') ||
+      qs("button[aria-label*='@']") ||
       qs(".OZZZK") ||
-      qs("span[title*='@']");
+      qs('[class*="Sender"] span') ||
+      qs('[class*="from"] span');
 
     var bodyEl =
+      qs('[data-testid="message-body"]') ||
       qs('[data-testid="emailBodyContainer"]') ||
       qs('[aria-label="Message body"]') ||
-      qs('[role="document"]');
+      qs('[aria-label*="Message body"]') ||
+      qs('div[role="document"]') ||
+      qs(".rps_xl9") ||
+      qs('[class*="UniqueMessageBody"]') ||
+      qs('[class*="MessageBody"]');
 
-    if (!subjectEl || !bodyEl) return null;
+    // Body fallback: longest readable block in main pane
+    if (!bodyEl) {
+      var candidates = qsa(
+        '[role="main"] div[dir="ltr"], [role="main"] div[dir="auto"], [role="main"] div[class*="body"], [role="main"] div[class*="Body"]'
+      );
+      var best = null, bestLen = 0, i, t;
+      for (i = 0; i < candidates.length; i++) {
+        t = text(candidates[i]);
+        if (t.length > bestLen && t.length > 40) {
+          best = candidates[i];
+          bestLen = t.length;
+        }
+      }
+      bodyEl = best;
+    }
+
+    if (!subjectEl || !bodyEl) {
+      console.debug("[CognitoMail] Outlook extract failed", {
+        subject: !!subjectEl,
+        body: !!bodyEl,
+        host: location.hostname,
+      });
+      return null;
+    }
 
     var subject = text(subjectEl);
     var body = text(bodyEl);
     if (!subject || body.length < 5) return null;
 
-    var sender = text(senderEl) || "unknown";
+    var sender = "unknown";
     if (senderEl) {
-      var title = senderEl.getAttribute("title") || senderEl.getAttribute("aria-label") || "";
-      var mm = title.match(/[\w.+-]+@[\w.-]+\.\w+/);
+      sender =
+        senderEl.getAttribute("title") ||
+        senderEl.getAttribute("aria-label") ||
+        text(senderEl) ||
+        "unknown";
+      var mm = String(sender).match(/[\w.+-]+@[\w.-]+\.\w+/);
       if (mm) sender = mm[0];
     }
+
+    // Also scan nearby for email addresses
+    if (sender === "unknown" || sender.indexOf("@") === -1) {
+      var near = qsa('[role="main"] span, [role="main"] button, [role="main"] a');
+      for (var j = 0; j < near.length; j++) {
+        var raw =
+          near[j].getAttribute("title") ||
+          near[j].getAttribute("aria-label") ||
+          text(near[j]);
+        var em = String(raw).match(/[\w.+-]+@[\w.-]+\.\w+/);
+        if (em) {
+          sender = em[0];
+          break;
+        }
+      }
+    }
+
     if (sender.indexOf("<") !== -1 && sender.indexOf("@") !== -1) {
       var m2 = sender.match(/<([^>]+@[^>]+)>/);
       if (m2) sender = m2[1].trim();
     }
+
+    console.log("[CognitoMail] Outlook extracted:", subject.slice(0, 50), sender);
 
     return {
       sender: sender,
