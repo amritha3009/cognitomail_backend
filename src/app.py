@@ -7,15 +7,19 @@ Flask REST API — CognitoMail backend.
 - Hybrid hard-rule boosts (explicit auth fail only; "none" ≠ fail)
 - VirusTotal on sender domain + domains found in email links
 - Rich feature details for the extension UI
+- Active-learning feedback logging + download
 
 Endpoints:
     POST /analyze
     GET  /health
     GET  /model-info
     POST /feedback
+    GET  /feedback-stats
+    GET  /download-feedback   ← protected by FEEDBACK_DOWNLOAD_TOKEN
 
 Env (Render):
     VT_API_KEY
+    FEEDBACK_DOWNLOAD_TOKEN   (set a long secret; used by /download-feedback)
     PORT
 """
 
@@ -37,7 +41,7 @@ import joblib
 import numpy as np
 import requests
 from urllib.parse import urlparse
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
 from feature_extractor import extract_features, FEATURE_NAMES
@@ -60,18 +64,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 VT_API_KEY = os.environ.get("VT_API_KEY", "").strip()
-MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
-MODEL_PATH = os.path.join(MODELS_DIR, "phishing_model.pkl")
-FEEDBACK_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "data", "raw", "feedback_log.csv"
-)
-
-pipeline = None
-
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-
-VT_API_KEY = os.environ.get("VT_API_KEY", "").strip()
+FEEDBACK_DOWNLOAD_TOKEN = os.environ.get("FEEDBACK_DOWNLOAD_TOKEN", "").strip()
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
 MODEL_PATH = os.path.join(MODELS_DIR, "phishing_model.pkl")
 FEEDBACK_PATH = os.path.join(
@@ -511,7 +504,7 @@ def analyze():
         log.error(f"Analysis error: {e}")
         return jsonify({"error": "Analysis failed", "detail": str(e)}), 500
 
-        # VirusTotal — fast path: sender domain only (optional 1 link domain)
+    # VirusTotal — fast path: sender domain only (optional 1 link domain)
     sender_domain = get_sender_domain(email_dict["sender"])
     link_domains = domains_from_urls(email_dict["urls"])
 
@@ -560,7 +553,8 @@ def analyze():
             result["flags"].append(
                 f"VirusTotal: {sus} engines marked {worst} as suspicious"
             )
-        # Active learning metadata
+
+    # Active learning metadata
     al = active_learning_meta(result)
     result.update(al)
 
@@ -612,6 +606,7 @@ def feedback():
         log.error(f"Feedback error: {e}")
         return jsonify({"error": "Failed to log feedback"}), 500
 
+
 @app.route("/feedback-stats", methods=["GET"])
 def feedback_stats():
     if not os.path.exists(FEEDBACK_PATH):
@@ -640,6 +635,43 @@ def feedback_stats():
         "ready_to_retrain": count >= 25,
         "hint": "Run python src/retrain_with_feedback.py" if count >= 25 else "Collect more feedback",
     })
+
+
+@app.route("/download-feedback", methods=["GET"])
+def download_feedback():
+    """
+    Return the feedback_log.csv as a proper downloadable file.
+    Protected by FEEDBACK_DOWNLOAD_TOKEN (query param or header).
+
+    Usage:
+        curl -OJ "https://YOUR-APP.onrender.com/download-feedback?token=YOUR_SECRET"
+        curl -H "X-Download-Token: YOUR_SECRET" -OJ https://YOUR-APP.onrender.com/download-feedback
+    """
+    token = (
+        request.args.get("token")
+        or request.headers.get("X-Download-Token")
+        or ""
+    ).strip()
+
+    # Require a non-empty token to be configured, and that it matches
+    if not FEEDBACK_DOWNLOAD_TOKEN:
+        return jsonify({
+            "error": "FEEDBACK_DOWNLOAD_TOKEN is not set on the server. "
+                     "Set it in Render → Environment to enable this endpoint."
+        }), 503
+
+    if token != FEEDBACK_DOWNLOAD_TOKEN:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if not os.path.exists(FEEDBACK_PATH):
+        return jsonify({"error": "No feedback log yet"}), 404
+
+    return send_file(
+        FEEDBACK_PATH,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="feedback_log.csv",
+    )
 
 
 if __name__ == "__main__":
