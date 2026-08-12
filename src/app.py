@@ -19,10 +19,6 @@ Env (Render):
     PORT
 """
 
-"""
-app.py — CognitoMail backend
-"""
-
 import os
 import sys
 import re
