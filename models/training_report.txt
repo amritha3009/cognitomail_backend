@@ -2,56 +2,56 @@ CognitoMail — Phishing Detection Training Report
 ============================================================
 
 Model        : random_forest
-Total samples: 3002
-  Legitimate : 2501
-  Phishing   : 501
+Total samples: 23002
+  Legitimate : 10571
+  Phishing   : 12431
 
-CV F1 (5-fold): 0.8712 ± 0.0273
-Test Accuracy : 0.9700
-ROC-AUC       : 0.9905
+CV F1 (5-fold): 0.9597 ± 0.0032
+Test Accuracy : 0.9570
+ROC-AUC       : 0.9898
 
 Confusion Matrix:
-[[499   2]
- [ 16  84]]
+[[1985  129]
+ [  69 2418]]
 
 Classification Report:
               precision    recall  f1-score   support
 
-  Legitimate       0.97      1.00      0.98       501
-    Phishing       0.98      0.84      0.90       100
+  Legitimate       0.97      0.94      0.95      2114
+    Phishing       0.95      0.97      0.96      2487
 
-    accuracy                           0.97       601
-   macro avg       0.97      0.92      0.94       601
-weighted avg       0.97      0.97      0.97       601
+    accuracy                           0.96      4601
+   macro avg       0.96      0.96      0.96      4601
+weighted avg       0.96      0.96      0.96      4601
 
 
 Feature Importances (all 30):
-  body_length                              0.1324
-  body_entropy                             0.1002
-  reward_word_count                        0.0837
-  caps_word_ratio                          0.0727
-  http_url_count                           0.0669
-  avg_url_entropy                          0.0657
-  sender_entropy                           0.0558
-  display_name_mismatch                    0.0541
-  avg_url_length                           0.0530
-  has_ip_based_url                         0.0386
-  subject_length                           0.0368
-  url_count                                0.0348
-  avg_subdomain_depth                      0.0340
-  subject_all_caps_words                   0.0325
-  free_email_domain                        0.0299
-  url_domain_variety                       0.0291
-  special_char_ratio_in_urls               0.0237
-  subject_exclamations                     0.0215
-  credential_word_count                    0.0088
-  urgency_word_count                       0.0077
-  brand_impersonation_count                0.0076
-  sender_digits_ratio                      0.0055
-  html_form_elements                       0.0043
-  subject_urgency_words                    0.0005
-  redirect_link_count                      0.0003
-  suspicious_tld_count                     0.0000
+  http_url_count                           0.4497
+  avg_url_length                           0.1664
+  avg_url_entropy                          0.1236
+  avg_subdomain_depth                      0.0533
+  body_entropy                             0.0340
+  sender_entropy                           0.0242
+  suspicious_tld_count                     0.0240
+  subject_length                           0.0231
+  body_length                              0.0218
+  caps_word_ratio                          0.0165
+  display_name_mismatch                    0.0128
+  special_char_ratio_in_urls               0.0115
+  reward_word_count                        0.0083
+  url_count                                0.0059
+  has_ip_based_url                         0.0057
+  subject_all_caps_words                   0.0049
+  url_domain_variety                       0.0039
+  subject_exclamations                     0.0034
+  free_email_domain                        0.0023
+  html_form_elements                       0.0016
+  credential_word_count                    0.0011
+  urgency_word_count                       0.0009
+  sender_digits_ratio                      0.0007
+  brand_impersonation_count                0.0006
+  redirect_link_count                      0.0001
+  subject_urgency_words                    0.0001
   spf_pass                                 0.0000
   dkim_pass                                0.0000
   dmarc_pass                               0.0000
@@ -62,9 +62,9 @@ HELD-OUT EVALUATION — Simulation Emails
 ============================================================
 These emails were NEVER seen during training.
 
-  [CORRECT] actual=PHISHING, predicted=PHISHING, P=0.562 | Urgent: Your PayPal account has been suspended
-  [WRONG] actual=PHISHING, predicted=LEGIT, P=0.466 | Your Amazon order is on hold
-  [CORRECT] actual=LEGIT, predicted=LEGIT, P=0.454 | June Newsletter — Product Updates
-  [CORRECT] actual=LEGIT, predicted=LEGIT, P=0.352 | Staff meeting rescheduled to Friday 2pm
+  [CORRECT] actual=PHISHING, predicted=PHISHING, P=0.515 | Urgent: Your PayPal account has been suspended
+  [WRONG] actual=PHISHING, predicted=LEGIT, P=0.296 | Your Amazon order is on hold
+  [CORRECT] actual=LEGIT, predicted=LEGIT, P=0.227 | June Newsletter — Product Updates
+  [CORRECT] actual=LEGIT, predicted=LEGIT, P=0.338 | Staff meeting rescheduled to Friday 2pm
 
 Simulation accuracy: 0.75 (3/4)

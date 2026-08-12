@@ -1,0 +1,30 @@
+CognitoMail — Evaluation Report
+============================================================
+
+Random seed     : 42
+Total samples   : 23002
+  Legitimate    : 10571
+  Phishing      : 12431
+Train / Test    : 18401 / 4601
+
+Test Accuracy   : 0.9570
+Precision       : 0.9494
+Recall          : 0.9723
+F1-score        : 0.9607
+ROC-AUC         : 0.9898
+CV F1 (5-fold)  : 0.9588 ± 0.0015
+
+Confusion Matrix:
+[[1985  129]
+ [  69 2418]]
+
+Classification Report:
+              precision    recall  f1-score   support
+
+  Legitimate       0.97      0.94      0.95      2114
+    Phishing       0.95      0.97      0.96      2487
+
+    accuracy                           0.96      4601
+   macro avg       0.96      0.96      0.96      4601
+weighted avg       0.96      0.96      0.96      4601
+
