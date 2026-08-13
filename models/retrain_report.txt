@@ -2,20 +2,20 @@ CognitoMail — Retrain with Feedback Report
 ============================================================
 
 Public samples   : 23002
-Feedback samples : 0 (×3 in training)
-CV F1            : 0.9588 ± 0.0015
-Test Accuracy    : 0.9570
-ROC-AUC          : 0.9898
+Feedback samples : 9 (×3 in training)
+CV F1            : 0.9595 ± 0.0032
+Test Accuracy    : 0.9553
+ROC-AUC          : 0.9897
 
 Confusion Matrix:
-[[1985  129]
- [  69 2418]]
+[[1994  124]
+ [  82 2406]]
 
               precision    recall  f1-score   support
 
-  Legitimate       0.97      0.94      0.95      2114
-    Phishing       0.95      0.97      0.96      2487
+  Legitimate       0.96      0.94      0.95      2118
+    Phishing       0.95      0.97      0.96      2488
 
-    accuracy                           0.96      4601
-   macro avg       0.96      0.96      0.96      4601
-weighted avg       0.96      0.96      0.96      4601
+    accuracy                           0.96      4606
+   macro avg       0.96      0.95      0.95      4606
+weighted avg       0.96      0.96      0.96      4606
